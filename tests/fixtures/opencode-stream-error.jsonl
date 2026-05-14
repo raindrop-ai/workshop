@@ -1,0 +1,1 @@
+{"type":"error","timestamp":1778795844727,"sessionID":"ses_1d7816c6effegz7vOFe5SpVL6r","error":{"name":"UnknownError","data":{"message":"Model not found: openai/gpt-4o-mini. Did you mean: gpt-4o-mini?"}}}

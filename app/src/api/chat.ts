@@ -57,6 +57,7 @@ export interface AgentLoadout {
 export type AgentStreamEvent =
   | { type: "text"; content: string }
   | ({ type: "loadout" } & AgentLoadout)
+  | { type: "status"; content: string }
   | { type: "error"; content: string }
   | { type: "tool_start"; id: string; name: string; input_preview?: string }
   | { type: "tool_finish"; id: string; ok: boolean; output_preview?: string }

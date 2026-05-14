@@ -28,6 +28,18 @@ function cwdLabel(cwd: string | null): string {
   return base || trimmed;
 }
 
+function providerCommand(provider: AgentProviderId): string {
+  if (provider === "codex") return "codex";
+  if (provider === "opencode") return "opencode";
+  return "claude";
+}
+
+function providerConfigPath(provider: AgentProviderId): string {
+  if (provider === "codex") return "~/.codex/config.toml";
+  if (provider === "opencode") return "~/.config/opencode/opencode.jsonc";
+  return "~/.claude.json";
+}
+
 export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?: string | null; provider?: AgentProviderId } = {}) {
   const [status, setStatus] = useState<Status>({ state: "gray" });
   const [showRemediation, setShowRemediation] = useState(false);
@@ -71,8 +83,9 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
 
   const installer =
     "curl -fsSL https://raw.githubusercontent.com/raindrop-ai/cli/main/install.sh | bash";
-  const mcpAddCommand =
-    "claude mcp add raindrop -- bun /path/to/workshop2/src/index.ts workshop mcp";
+  const mcpAddCommand = provider === "opencode"
+    ? '{ "$schema": "https://opencode.ai/config.json", "mcp": { "raindrop": { "type": "local", "command": ["bun", "/path/to/workshop/src/index.ts", "workshop", "mcp"] } } }'
+    : "claude mcp add raindrop -- bun /path/to/workshop/src/index.ts workshop mcp";
   const dir = status.state === "green" ? cwdLabel(cwd) : "";
   const statusContent = (
     <>
@@ -143,7 +156,7 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
         <div className="absolute right-0 top-full mt-2 w-80 rounded-lg border border-white/10 bg-zinc-900/95 backdrop-blur p-3 z-50 text-xs">
           <div className="text-white/80 mb-2 leading-relaxed">
             Workshop chat streams through your local {providerLabel(provider)} CLI. Make sure
-            <code className="mx-1 rounded bg-black/40 px-1 font-mono">{provider === "codex" ? "codex" : "claude"}</code>
+            <code className="mx-1 rounded bg-black/40 px-1 font-mono">{providerCommand(provider)}</code>
             is on your PATH and you are logged in.
           </div>
           <button
@@ -162,21 +175,18 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
                 <span className="flex-1 select-all break-all">{installer}</span>
               </div>
               <div>
-                For source-tree development, register the stdio MCP command once:
+                {provider === "opencode"
+                  ? "For source-tree development, add this MCP entry to your OpenCode config:"
+                  : "For source-tree development, register the stdio MCP command once:"}
               </div>
               <div className="flex items-center gap-2 rounded bg-black/40 px-2 py-1.5 font-mono text-[10px] text-white/90">
                 <span className="flex-1 select-all break-all">{mcpAddCommand}</span>
               </div>
               <div>
                 Workshop chat streams through {providerLabel(provider)} and
-                passes the Raindrop MCP into that session. The Claude Code MCP
-                entry lives in{" "}
+                passes the Raindrop MCP into that session. The config entry lives in{" "}
                 <code className="font-mono bg-black/40 px-1 rounded">
-                  ~/.claude.json
-                </code>
-                ; Codex can also read MCP servers from{" "}
-                <code className="font-mono bg-black/40 px-1 rounded">
-                  ~/.codex/config.toml
+                  {providerConfigPath(provider)}
                 </code>
                 .
               </div>

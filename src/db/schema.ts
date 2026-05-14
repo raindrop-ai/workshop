@@ -131,7 +131,7 @@ export const annotations = sqliteTable(
     span_id: text("span_id"),
     kind: text("kind", { enum: ["issue", "good", "note"] }).notNull(),
     note: text("note"),
-    source: text("source", { enum: ["user", "claude-code", "codex"] }).notNull(),
+    source: text("source", { enum: ["user", "claude-code", "codex", "opencode"] }).notNull(),
     created_at: integer("created_at").notNull(),
   },
   (table) => [

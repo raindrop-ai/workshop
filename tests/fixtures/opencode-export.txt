@@ -1,0 +1,96 @@
+Exporting session: ses_1d7816c6effegz7vOFe5SpVL6r
+{
+  "info": {
+    "id": "ses_1d7816c6effegz7vOFe5SpVL6r",
+    "slug": "happy-star",
+    "projectID": "05247fc5ce6fd48b4d169cd3b67be1e311f67018",
+    "directory": "/home/runner/work/workshop/workshop",
+    "path": "",
+    "title": "New session - 2026-05-14T21:57:24.497Z",
+    "agent": "build",
+    "model": {
+      "id": "gpt-4o-mini",
+      "providerID": "openai",
+      "variant": "default"
+    },
+    "version": "1.14.50",
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "permission": [
+      {
+        "permission": "question",
+        "pattern": "*",
+        "action": "deny"
+      }
+    ],
+    "time": {
+      "created": 1778795844497,
+      "updated": 1778795844550
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1778795844538
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "openai",
+          "modelID": "gpt-4o-mini"
+        },
+        "id": "msg_e287e93ba001B2GJRyKiOPRfoH",
+        "sessionID": "ses_1d7816c6effegz7vOFe5SpVL6r"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "hello",
+          "id": "prt_e287e93bf001FYuZgouzZrDnJ5",
+          "sessionID": "ses_1d7816c6effegz7vOFe5SpVL6r",
+          "messageID": "msg_e287e93ba001B2GJRyKiOPRfoH"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "time": {
+          "created": 1778795844600
+        },
+        "id": "msg_assistant_1",
+        "sessionID": "ses_1d7816c6effegz7vOFe5SpVL6r"
+      },
+      "parts": [
+        {
+          "type": "reasoning",
+          "text": "Looking through the request."
+        },
+        {
+          "type": "tool_call",
+          "id": "tool_1",
+          "name": "read_file",
+          "input": {
+            "path": "README.md"
+          },
+          "result": {
+            "output": "# Demo"
+          }
+        },
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ]
+    }
+  ]
+}

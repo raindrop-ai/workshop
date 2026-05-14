@@ -1,9 +1,14 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-
-export type AgentProviderId = "claude" | "codex";
-export type AgentAnnotationSource = "claude-code" | "codex";
+import {
+  parseAgentProvider as parseAgentProviderValue,
+  providerAnnotationSource,
+  providerDefaultSlashCommands,
+  providerLabel,
+  type AgentAnnotationSource,
+  type AgentProviderId,
+} from "./agent-provider";
 
 export interface AgentLoadout {
   tools: string[];
@@ -116,7 +121,7 @@ export function setAgentProvider(provider: AgentProviderId): AgentProviderId {
 }
 
 export function parseAgentProvider(value: unknown): AgentProviderId | null {
-  return value === "claude" || value === "codex" ? value : null;
+  return parseAgentProviderValue(value);
 }
 
 export function defaultAgentLoadout(provider: AgentProviderId): AgentLoadout {
@@ -125,16 +130,16 @@ export function defaultAgentLoadout(provider: AgentProviderId): AgentLoadout {
     mcps: ["raindrop"],
     skills: [],
     plugins: [],
-    slash_commands: provider === "claude" ? [] : ["/clear", "/trace"],
+    slash_commands: providerDefaultSlashCommands(provider),
   };
 }
 
 export function agentProviderLabel(provider: AgentProviderId): string {
-  return provider === "codex" ? "Codex" : "Claude Code";
+  return providerLabel(provider);
 }
 
 export function agentAnnotationSource(provider: AgentProviderId): AgentAnnotationSource {
-  return provider === "codex" ? "codex" : "claude-code";
+  return providerAnnotationSource(provider);
 }
 
 export function raindropMcpToolList(): string {

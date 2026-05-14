@@ -17,17 +17,23 @@ import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
 import { getCodexSession, listCodexSessions } from "./codex-sessions";
+import { getOpencodeSession, listOpencodeSessions } from "./opencode-sessions";
 import { runClaudeCliChat } from "./claude-cli-chat";
 import { runCodexCliChat } from "./codex-cli-chat";
+import { runOpencodeCliChat } from "./opencode-cli-chat";
 import {
   agentAnnotationSource,
   agentProviderLabel,
   defaultAgentLoadout,
   getAgentProvider,
-  parseAgentProvider,
   setAgentProvider,
-  type AgentProviderId,
 } from "./agent-chat";
+import {
+  parseAgentProvider,
+  providerCliCommand,
+  providerLabel,
+  type AgentProviderId,
+} from "./agent-provider";
 import { loadInstallRegistry } from "./install/registry";
 import {
   ACTIVE_WORKSPACE_MISSING_MESSAGE,
@@ -55,7 +61,7 @@ import {
 import { replayDefaultDemoTraces } from "./demo-traces";
 
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
-  return value === "user" || value === "claude-code" || value === "codex" ? value : null;
+  return value === "user" || value === "claude-code" || value === "codex" || value === "opencode" ? value : null;
 }
 
 function getStringMetadata(
@@ -369,6 +375,32 @@ export async function createServer(port: number) {
   let anthropicModelsCache: { expiresAt: number; models: string[] } | null = null;
   const claudeCliChatEnabled =
     port !== 0 && process.env.RAINDROP_WORKSHOP_CLAUDE_CLI_CHAT !== "0";
+  const opencodeCliChatEnabled =
+    process.env.RAINDROP_WORKSHOP_OPENCODE_CLI_CHAT !== "0";
+
+  function cliOnPath(command: string): boolean {
+    try {
+      const child = Bun.spawnSync([command, "--version"], {
+        env: process.env,
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      return child.exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function providerEnabled(provider: AgentProviderId): boolean {
+    if (provider === "claude") return claudeCliChatEnabled;
+    if (provider === "opencode") return opencodeCliChatEnabled;
+    return true;
+  }
+
+  function providerAvailable(provider: AgentProviderId): boolean {
+    if (!providerEnabled(provider)) return false;
+    return cliOnPath(providerCliCommand(provider));
+  }
 
   function backendUrl(): string {
     const addr = server.address() as AddressInfo | null;
@@ -405,6 +437,7 @@ export async function createServer(port: number) {
 
   function currentLoadout(workspace: ActiveWorkspace) {
     if (agentProvider === "codex") return defaultAgentLoadout("codex");
+    if (agentProvider === "opencode") return defaultAgentLoadout("opencode");
     if (!latestClaudeLoadout) {
       latestClaudeLoadout = getLatestClaudeLoadout(workspace.cwd);
     }
@@ -1058,7 +1091,7 @@ export async function createServer(port: number) {
   app.post("/api/agent/provider", (req, res) => {
     const provider = parseAgentProvider((req.body as Record<string, unknown> | null)?.provider);
     if (!provider) {
-      res.status(400).json({ error: "provider must be 'claude' or 'codex'" });
+      res.status(400).json({ error: "provider must be 'claude', 'codex', or 'opencode'" });
       return;
     }
     agentProvider = setAgentProvider(provider);
@@ -1075,12 +1108,16 @@ export async function createServer(port: number) {
       ? null
       : parseAgentProvider(req.query.provider);
     if (req.query.provider !== undefined && !requestedProvider) {
-      res.status(400).json({ error: "provider must be 'claude' or 'codex'" });
+      res.status(400).json({ error: "provider must be 'claude', 'codex', or 'opencode'" });
       return;
     }
     const targetProvider = requestedProvider ?? agentProvider;
     if (targetProvider === "codex") {
       res.json(listCodexSessions(workspace.cwd));
+      return;
+    }
+    if (targetProvider === "opencode") {
+      res.json(listOpencodeSessions(workspace.cwd));
       return;
     }
     res.json(listClaudeSessions(workspace.cwd));
@@ -1099,6 +1136,15 @@ export async function createServer(port: number) {
       const session = getCodexSession(workspace.cwd, req.params.id);
       if (!session) {
         res.status(404).json({ error: "Codex session not found" });
+        return;
+      }
+      res.json(session);
+      return;
+    }
+    if (agentProvider === "opencode") {
+      const session = getOpencodeSession(workspace.cwd, req.params.id);
+      if (!session) {
+        res.status(404).json({ error: "OpenCode session not found" });
         return;
       }
       res.json(session);
@@ -1125,6 +1171,14 @@ export async function createServer(port: number) {
     const requestProvider = agentProvider;
     if (requestProvider === "claude" && !claudeCliChatEnabled) {
       res.status(409).json({ error: "Claude Code chat is disabled" });
+      return;
+    }
+    if (requestProvider === "opencode" && !opencodeCliChatEnabled) {
+      res.status(409).json({ error: "OpenCode chat is disabled" });
+      return;
+    }
+    if (!providerAvailable(requestProvider)) {
+      res.status(409).json({ error: `${providerLabel(requestProvider)} CLI is unavailable` });
       return;
     }
     const workspace = activeWorkspaceOrError(res);
@@ -1175,6 +1229,26 @@ export async function createServer(port: number) {
             broadcastStreamEvent({ type: "error", content: nextContent });
           },
         })
+        : requestProvider === "opencode"
+          ? await runOpencodeCliChat(chatInput, {
+            onEvent(event) {
+              events.push(event);
+              broadcastStreamEvent(event);
+            },
+            onProviderSession(sessionId) {
+              providerSessionId = sessionId;
+              broadcastStreamEvent({ type: "provider_session", sessionId });
+            },
+            onText(nextContent) {
+              text = nextContent;
+              broadcastStreamEvent({ type: "text", content: nextContent });
+            },
+            onStatus() {},
+            onError(nextContent) {
+              errorText = nextContent;
+              broadcastStreamEvent({ type: "error", content: nextContent });
+            },
+          })
         : await runClaudeCliChat(chatInput, {
           onEvent(event) {
             events.push(event);
@@ -1369,16 +1443,25 @@ export async function createServer(port: number) {
       agent_provider: agentProvider,
       agent: {
         provider: agentProvider,
-        mode: agentProvider === "codex" ? "codex_exec_stream" : "cli_stream",
-        state: agentProvider === "codex" || claudeCliChatEnabled ? "green" : "gray",
+        mode:
+          agentProvider === "codex"
+            ? "codex_exec_stream"
+            : agentProvider === "opencode"
+              ? "opencode_exec_stream"
+              : "cli_stream",
+        state: providerAvailable(agentProvider) ? "green" : "gray",
       },
       claude_code: {
         mode: "cli_stream",
-        state: claudeCliChatEnabled ? "green" : "gray",
+        state: providerAvailable("claude") ? "green" : "gray",
       },
       codex: {
         mode: "codex_exec_stream",
-        state: "green",
+        state: providerAvailable("codex") ? "green" : "gray",
+      },
+      opencode: {
+        mode: "opencode_exec_stream",
+        state: providerAvailable("opencode") ? "green" : "gray",
       },
     });
   });

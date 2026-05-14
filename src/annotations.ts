@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { asc, eq } from "drizzle-orm";
 import { getDrizzleDb } from "./db";
 import { annotations } from "./db/schema";
-import type { AgentAnnotationSource } from "./agent-chat";
+import type { AgentAnnotationSource } from "./agent-provider";
 
 export type AnnotationKind = "issue" | "good" | "note";
 export type AnnotationSource = "user" | AgentAnnotationSource;
@@ -26,7 +26,7 @@ export interface CreateAnnotationInput {
 }
 
 const KINDS: ReadonlySet<AnnotationKind> = new Set(["issue", "good", "note"]);
-const SOURCES: ReadonlySet<AnnotationSource> = new Set(["user", "claude-code", "codex"]);
+const SOURCES: ReadonlySet<AnnotationSource> = new Set(["user", "claude-code", "codex", "opencode"]);
 
 export class InvalidAnnotationError extends Error {
   constructor(message: string) {
