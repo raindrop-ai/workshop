@@ -44,8 +44,8 @@ That's it. Traces stream into the UI the moment your agent runs.
 
 - **Live streamed traces.** Every token, tool call, and span streams into
   Workshop as it happens. No polling, no refreshing.
-- **Coding-agent integration.** Claude Code reads your traces, writes evals
-  against your codebase, and fixes what's broken.
+- **Coding-agent integration.** Claude Code, Codex, and OpenCode can read
+  your traces, write evals against your codebase, and fix what's broken.
 - **Self-healing eval loop.** Claude writes the eval, runs your agent, sees the
   failure, fixes the code, and re-runs — until every assertion passes.
 - **Local replay.** `/setup-agent-replay` scaffolds an HTTP endpoint that replays a
@@ -59,6 +59,9 @@ That's it. Traces stream into the UI the moment your agent runs.
   Agno, Deep Agents
 - **Providers:** AWS Bedrock, Azure OpenAI, Vertex AI
 - **Coding agents:** Claude Code, Codex, Devin, Cursor, OpenCode
+- **OpenCode support:** use `raindrop setup` (or add `raindrop` to
+  `~/.config/opencode/opencode.jsonc`) for Workshop chat; the
+  `examples/opencode-plugin-chat` app remains the separate trace-emitting plugin demo.
 
 ## Configuration
 

@@ -23,7 +23,7 @@ export interface SavedAnnotationPreview {
   id: string;
   kind: "issue" | "good" | "note";
   note: string | null;
-  source: "user" | "claude-code" | "codex";
+  source: "user" | "claude-code" | "codex" | "opencode";
   span_id: string | null;
   created_at: number;
 }
@@ -34,7 +34,7 @@ export function getSavedAnnotationPreview(event: SavedEvent): SavedAnnotationPre
   const preview = raw as Partial<SavedAnnotationPreview>;
   if (typeof preview.id !== "string") return null;
   if (preview.kind !== "issue" && preview.kind !== "good" && preview.kind !== "note") return null;
-  if (preview.source !== "user" && preview.source !== "claude-code" && preview.source !== "codex") return null;
+  if (preview.source !== "user" && preview.source !== "claude-code" && preview.source !== "codex" && preview.source !== "opencode") return null;
   return {
     id: preview.id,
     kind: preview.kind,

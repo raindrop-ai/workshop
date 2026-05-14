@@ -1170,7 +1170,7 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
   }, [source]);
 
   const createAnnotationAndSave = useCallback(async (
-    input: { span_id?: string | null; kind: AnnotationKind; note?: string; source?: "user" | "claude-code" | "codex" }
+    input: { span_id?: string | null; kind: AnnotationKind; note?: string; source?: "user" | "claude-code" | "codex" | "opencode" }
   ) => {
     const created = await annotationsApi.create({ ...input, source: input.source ?? "user" });
     if (created) saveAnnotationPreview(created);
