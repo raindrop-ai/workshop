@@ -68,6 +68,7 @@ That's it. Traces stream into the UI the moment your agent runs.
 ## CLI
 
 ```bash
+raindrop setup             # wires Raindrop into your AI coding tools
 raindrop workshop          # start and open UI
 raindrop workshop setup    # write .env, then start and open
 raindrop workshop status   # check health
