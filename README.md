@@ -56,7 +56,6 @@ That's it. Traces stream into the UI the moment your agent runs.
   Agno, Deep Agents
 - **Providers:** AWS Bedrock, Azure OpenAI, Vertex AI
 - **Coding agents:** Claude Code, Codex, Devin, Cursor, OpenCode
-- **Transport:** Raindrop SDKs, OTLP JSON (`/v1/traces`)
 
 ## Configuration
 
