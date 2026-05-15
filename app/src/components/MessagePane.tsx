@@ -70,12 +70,14 @@ interface ClaudeMessageStream {
 type AgentStreamEvent =
   | { type: "text"; content: string }
   | ({ type: "loadout" } & AgentLoadout)
+  | { type: "status"; content: string }
   | { type: "error"; content: string }
   | { type: "tool_start"; id: string; name: string; input_preview?: string }
   | { type: "tool_finish"; id: string; ok: boolean; output_preview?: string }
   | { type: "thinking_delta"; content: string }
   | { type: "subagent_start"; parent_id: string; subagent: string }
   | { type: "provider_session"; sessionId: string }
+  | { type: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number }
   | { type: "done" };
 
 interface AgentLoadout {
@@ -172,6 +174,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const resizeRef = useRef<{ x: number; width: number; shouldCollapse: boolean } | null>(null);
   const activeClientMessageIdRef = useRef<string | null>(null);
   const liveBlocksRef = useRef<AssistantMessageBlock[]>([]);
+  const providerRef = useRef<AgentProviderId>("claude");
+  const switchingProviderRef = useRef(false);
   const terminalCopyResetRef = useRef<number | null>(null);
   const collapseHoldTimerRef = useRef<number | null>(null);
   const springCloseTimerRef = useRef<number | null>(null);
@@ -225,6 +229,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     if (collapsePreview || springClosing) return;
     saveWidth(width);
   }, [width, collapsePreview, springClosing]);
+
+  useEffect(() => {
+    providerRef.current = provider;
+  }, [provider]);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
@@ -366,13 +374,19 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const res = await fetch("/api/agent/provider");
       if (!res.ok) return;
       const body = await res.json().catch(() => null);
-      if (!cancelled && isAgentProvider(body?.provider)) setProvider(body.provider);
+      if (!cancelled && isAgentProvider(body?.provider)) {
+        providerRef.current = body.provider;
+        setProvider(body.provider);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
 
   useWorkshopEvent("agent_provider", (data: { provider?: string }) => {
     if (isAgentProvider(data.provider)) {
+      if (switchingProviderRef.current) return;
+      if (data.provider === providerRef.current) return;
+      providerRef.current = data.provider;
       setProvider(data.provider);
       startNewChat();
       setShowList(true);
@@ -524,8 +538,12 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   async function switchProvider(next: AgentProviderId) {
     if (next === provider || switchingProvider) return;
     const previous = provider;
+    providerRef.current = next;
     setProvider(next);
     setError(null);
+    startNewChat();
+    setShowList(true);
+    switchingProviderRef.current = true;
     setSwitchingProvider(true);
     try {
       const res = await fetch("/api/agent/provider", {
@@ -535,14 +553,17 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error ?? "Could not switch local coding agent.");
-      if (isAgentProvider(body?.provider)) setProvider(body.provider);
-      startNewChat();
-      setShowList(true);
+      if (isAgentProvider(body?.provider)) {
+        providerRef.current = body.provider;
+        setProvider(body.provider);
+      }
       void refreshSessions();
     } catch (err) {
+      providerRef.current = previous;
       setProvider(previous);
       setError((err as Error).message);
     } finally {
+      switchingProviderRef.current = false;
       setSwitchingProvider(false);
     }
   }
@@ -910,7 +931,7 @@ function FloatingAskButton({ provider, onOpen }: { provider: AgentProviderId; on
         title={`Ask ${providerLabel(provider)}`}
       >
         <Terminal className="h-4 w-4 text-zinc-950" />
-        <span>Ask Claude Code</span>
+        <span>Ask {providerLabel(provider)}</span>
       </button>
     </div>
   );

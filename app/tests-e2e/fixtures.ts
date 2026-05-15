@@ -58,7 +58,9 @@ export const test = base.extend<{ workshop: WorkshopHandle }, { workshopWorker: 
       const port = 5910 + workerInfo.workerIndex;
       const tmp = mkdtempSync(path.join(tmpdir(), `rd-workshop-w${workerInfo.workerIndex}-`));
       const dbPath = path.join(tmp, "workshop.db");
+      const stateDir = path.join(tmp, "state");
       mkdirSync(path.dirname(dbPath), { recursive: true });
+      mkdirSync(stateDir, { recursive: true });
 
       const proc = spawn("bun", ["src/index.ts", "workshop", "serve"], {
         cwd: REPO_ROOT,
@@ -66,6 +68,7 @@ export const test = base.extend<{ workshop: WorkshopHandle }, { workshopWorker: 
           ...process.env,
           RAINDROP_WORKSHOP_PORT: String(port),
           RAINDROP_WORKSHOP_DB_PATH: dbPath,
+          RAINDROP_WORKSHOP_STATE_DIR: stateDir,
         },
         stdio: ["ignore", "pipe", "pipe"],
       });

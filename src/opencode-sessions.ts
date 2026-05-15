@@ -46,7 +46,7 @@ function parseSessionList(output: string, cwd: string): ClaudeSessionSummary[] {
       updated_at: timestampString(row.updated),
       message_count: 0,
       last_prompt: null,
-      preview: typeof row.title === "string" ? row.title : null,
+      preview: typeof row.title === "string" ? previewText(stripWorkshopContext(row.title)) : null,
     }));
 }
 
@@ -79,8 +79,15 @@ function parseMessages(value: unknown): ClaudeChatMessage[] {
     const info = objectValue(typed?.info);
     const role = info?.role === "user" || info?.role === "assistant" ? info.role : null;
     if (!role) continue;
-    const blocks = parseParts(typed?.parts);
-    const content = blocksText(blocks);
+    let blocks = parseParts(typed?.parts);
+    let content = blocksText(blocks);
+    if (role === "user") {
+      const stripped = stripWorkshopContext(content);
+      if (stripped !== content) {
+        content = stripped;
+        blocks = content ? [{ type: "text", text: content }] : [];
+      }
+    }
     if (!content && blocks.length === 0) continue;
     messages.push({
       id: valueString(info?.id) ?? `opencode-${messages.length}`,
@@ -146,6 +153,14 @@ function previewText(value: string | null): string | null {
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
 }
 
+function stripWorkshopContext(content: string): string {
+  const envelopeIndex = content.indexOf("<workshop_message>");
+  if (envelopeIndex >= 0) {
+    return content.slice(envelopeIndex).replace(/^<workshop_message>[\s\S]*?<\/workshop_message>\s*/m, "").trim();
+  }
+  return content.trim();
+}
+
 function previewValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
@@ -158,9 +173,38 @@ function timestampString(value: unknown): string | null {
 }
 
 function parseExport(text: string): OpencodeExport | null {
+  const payload = firstJsonObject(text);
+  return payload ? parseJson<OpencodeExport>(payload) : null;
+}
+
+function firstJsonObject(text: string): string | null {
   const jsonStart = text.indexOf("{");
   if (jsonStart < 0) return null;
-  return parseJson<OpencodeExport>(text.slice(jsonStart));
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = jsonStart; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = inString;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(jsonStart, i + 1);
+    }
+  }
+  return null;
 }
 
 function execOpenCode(args: string[]): string {
@@ -191,6 +235,8 @@ function valueString(value: unknown): string | null {
 
 export const _internal = {
   parseExport,
+  firstJsonObject,
   parseSessionList,
   parseMessages,
+  stripWorkshopContext,
 };

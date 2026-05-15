@@ -60,7 +60,7 @@ That's it. Traces stream into the UI the moment your agent runs.
 - **Providers:** AWS Bedrock, Azure OpenAI, Vertex AI
 - **Coding agents:** Claude Code, Codex, Devin, Cursor, OpenCode
 - **OpenCode support:** use `raindrop setup` (or add `raindrop` to
-  `~/.config/opencode/opencode.jsonc`) for Workshop chat; the
+  `~/.config/opencode/opencode.json`) for Workshop chat; the
   `examples/opencode-plugin-chat` app remains the separate trace-emitting plugin demo.
 
 ## Configuration

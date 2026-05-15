@@ -1,5 +1,4 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
 import {
   parseAgentProvider as parseAgentProviderValue,
@@ -9,6 +8,7 @@ import {
   type AgentAnnotationSource,
   type AgentProviderId,
 } from "./agent-provider";
+import { workshopStatePath } from "./state-dir";
 
 export interface AgentLoadout {
   tools: string[];
@@ -101,7 +101,7 @@ export const RAINDROP_MCP_TOOLS = [
   },
 ] as const;
 
-const STATE_PATH = path.join(os.homedir(), ".raindrop", "agent-provider.json");
+const STATE_PATH = workshopStatePath("agent-provider.json");
 
 export function getAgentProvider(): AgentProviderId {
   const envProvider = parseAgentProvider(process.env.RAINDROP_WORKSHOP_AGENT_PROVIDER);

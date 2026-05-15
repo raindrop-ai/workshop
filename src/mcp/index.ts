@@ -47,7 +47,7 @@ export async function runMcpServer(opts: RunMcpOptions = {}): Promise<McpServerH
 
 function mcpInstructions(): string {
   return (
-    "Raindrop Workshop lets the user and Claude inspect traces, run/replay agents, and iterate. " +
+    "Raindrop Workshop lets the user and their coding agent inspect traces, run/replay agents, and iterate. " +
     "Use the trace tools that best fit the question: get_current_run and get_run_outline for orientation, search_run for targeted payload search, query_traces for custom aggregation, and get_span_payload only when exact raw payload evidence is needed. " +
     "Use ask_agent when the user explicitly wants to ask the captured agent context a follow-up question about a run. " +
     "Use show_in_ui only when the user asks you to open a run or filter in the Workshop UI. " +

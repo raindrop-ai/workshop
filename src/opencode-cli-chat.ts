@@ -1,6 +1,14 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
-import { defaultAgentLoadout, type AgentCliChatHandlers, type AgentCliChatInput, type AgentCliChatResult, type AgentStreamEvent } from "./agent-chat";
+import {
+  agentAnnotationSource,
+  defaultAgentLoadout,
+  raindropMcpToolList,
+  type AgentCliChatHandlers,
+  type AgentCliChatInput,
+  type AgentCliChatResult,
+  type AgentStreamEvent,
+} from "./agent-chat";
 import { getOpencodeSession } from "./opencode-sessions";
 
 export type OpencodeCliChatInput = AgentCliChatInput;
@@ -18,7 +26,7 @@ export async function runOpencodeCliChat(
       ...process.env,
       RAINDROP_WORKSHOP_URL: input.backendUrl,
       RAINDROP_WORKSHOP_AGENT_PROVIDER: "opencode",
-      RAINDROP_WORKSHOP_ANNOTATION_SOURCE: "opencode",
+      RAINDROP_WORKSHOP_ANNOTATION_SOURCE: agentAnnotationSource("opencode"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -38,9 +46,49 @@ export function buildOpencodeArgs(input: OpencodeCliChatInput): string[] {
   if (model) args.push("--model", model);
   if (input.resumeSessionId) {
     args.push("--session", input.resumeSessionId);
+  } else {
+    args.push("--title", titleFromContent(input.content));
   }
-  args.push(input.content);
+  args.push("--");
+  args.push(userPrompt(input));
   return args;
+}
+
+function titleFromContent(content: string): string {
+  const compact = content.replace(/\s+/g, " ").trim();
+  if (!compact) return "Raindrop Workshop chat";
+  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
+}
+
+function directReplySystemPrompt(input: OpencodeCliChatInput): string {
+  const runInstruction = input.runId
+    ? `The current Workshop trace is ${input.runId}. Use the Raindrop trace tools as needed when the user asks about "this trace" or the trace context matters; get_run_outline is usually the fastest first read, and get_span_payload is for exact raw payload evidence.`
+    : "No Workshop trace is currently selected.";
+
+  return [
+    "You are replying inside the Raindrop Workshop chat pane.",
+    "Use normal assistant text as your final answer. Markdown is supported.",
+    "If the user asks you to reply with exact text, return only that exact text.",
+    "Use Raindrop MCP tools to inspect traces, read span payloads, annotate findings, and show evidence in the UI when those tools are available.",
+    "The Raindrop MCP server is configured as `raindrop` by `raindrop setup` with these tools:",
+    raindropMcpToolList(),
+    "If the user asks what Workshop tools are available, answer from that list instead of saying no tools are visible.",
+    runInstruction,
+  ].join(" ");
+}
+
+function userPrompt(input: OpencodeCliChatInput): string {
+  const lines = [
+    directReplySystemPrompt(input),
+    "",
+    "<workshop_message>",
+  ];
+  const sessionId = input.sessionId ?? input.resumeSessionId;
+  if (sessionId) lines.push(`session_id: ${sessionId}`);
+  if (input.userMessageId) lines.push(`message_id: ${input.userMessageId}`);
+  if (input.runId) lines.push(`run_id: ${input.runId}`);
+  lines.push("</workshop_message>", "", input.content);
+  return lines.join("\n");
 }
 
 function consumeOpencodeStream(
@@ -53,6 +101,7 @@ function consumeOpencodeStream(
     let stderr = "";
     let content = "";
     let providerSessionId: string | null = input.resumeSessionId ?? null;
+    let doneEmitted = false;
     const seenEvents = new Set<string>();
 
     const applyEvent = (event: unknown) => {
@@ -75,6 +124,7 @@ function consumeOpencodeStream(
           handlers.onError?.(nextError);
         },
         emit(event) {
+          if (event.type === "done") doneEmitted = true;
           handlers.onEvent?.(event);
         },
       });
@@ -110,6 +160,9 @@ function consumeOpencodeStream(
           content = assistant.content;
           handlers.onText(content);
         }
+      }
+      if (!doneEmitted) {
+        handlers.onEvent?.({ type: "done" });
       }
       resolve({ code, signal, stderr });
     });
@@ -178,6 +231,18 @@ export function handleOpencodeEvent(
   const thinking = thinkingFromEvent(event);
   if (thinking) {
     state.emit({ type: "thinking_delta", content: thinking });
+    return { content: state.content, providerSessionId };
+  }
+
+  const finish = finishFromEvent(event);
+  if (finish) {
+    if (
+      finish.input_tokens !== undefined ||
+      finish.output_tokens !== undefined ||
+      finish.cost_usd !== undefined
+    ) {
+      state.emit(finish);
+    }
     return { content: state.content, providerSessionId };
   }
 
@@ -252,6 +317,20 @@ function statusFromEvent(event: Record<string, unknown>): string | null {
   return null;
 }
 
+function finishFromEvent(event: Record<string, unknown>): Extract<AgentStreamEvent, { type: "usage" }> | null {
+  const part = objectValue(event.part);
+  const eventType = stringValue(event.type) ?? "";
+  const partType = stringValue(part?.type) ?? "";
+  if (eventType !== "step_finish" && partType !== "step-finish") return null;
+  const tokens = objectValue(part?.tokens) ?? objectValue(event.tokens);
+  return {
+    type: "usage",
+    input_tokens: numberValue(tokens?.input) ?? numberValue(tokens?.input_tokens),
+    output_tokens: numberValue(tokens?.output) ?? numberValue(tokens?.output_tokens),
+    cost_usd: numberValue(part?.cost) ?? numberValue(event.cost),
+  };
+}
+
 function extractText(value: unknown): string | null {
   if (typeof value === "string") return value;
   if (!Array.isArray(value)) return null;
@@ -275,6 +354,10 @@ function stringValue(value: unknown): string | null {
   return typeof value === "string" && value ? value : null;
 }
 
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function previewString(value: string): string | undefined {
   if (!value || value === "{}") return undefined;
   return value.length > 160 ? `${value.slice(0, 160)}...` : value;
@@ -282,7 +365,9 @@ function previewString(value: string): string | undefined {
 
 export const _internal = {
   opencodeSessionId,
+  titleFromContent,
   textFromEvent,
   thinkingFromEvent,
+  finishFromEvent,
   toolEventFromEvent,
 };

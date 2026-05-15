@@ -49,6 +49,33 @@ test("OpenCode export text parses into assistant/user messages and blocks", () =
   ]);
 });
 
+test("OpenCode export parser ignores status lines before or after JSON", () => {
+  const parsed = _internal.parseExport(`${exportText}\nExporting session: ses_demo\n`);
+  expect(parsed?.info?.id).toBe("ses_1d7816c6effegz7vOFe5SpVL6r");
+});
+
+test("OpenCode session parser strips Workshop prompt context from user messages", () => {
+  const parsed = _internal.parseMessages([{
+    info: { role: "user", id: "msg_user", time: { created: 1778795844538 } },
+    parts: [{
+      type: "text",
+      text: [
+        "You are replying inside the Raindrop Workshop chat pane.",
+        "",
+        "<workshop_message>",
+        "session_id: ses_demo",
+        "run_id: run_demo",
+        "</workshop_message>",
+        "",
+        "Explain this trace",
+      ].join("\n"),
+    }],
+  }]);
+
+  expect(parsed[0].content).toBe("Explain this trace");
+  expect(parsed[0].blocks).toEqual([{ type: "text", text: "Explain this trace" }]);
+});
+
 test("OpenCode parsers handle invalid or missing session data safely", () => {
   expect(_internal.parseSessionList("not json", "/tmp/project")).toEqual([]);
   expect(_internal.parseExport("no export payload here")).toBeNull();

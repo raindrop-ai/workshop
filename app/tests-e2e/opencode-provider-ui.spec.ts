@@ -15,7 +15,7 @@ test("workshop chat: OpenCode provider UI renders remediation details", async ({
   });
 
   await page.goto(workshop.url);
-  await page.getByRole("button", { name: /^Ask Claude Code$/ }).click();
+  await page.getByRole("button", { name: /^Ask (Claude Code|Codex|OpenCode)$/ }).click();
 
   const providerButton = page.getByRole("button", { name: /OpenCode$/ }).first();
   await expect(providerButton).toBeVisible();
@@ -31,7 +31,7 @@ test("workshop chat: OpenCode provider UI renders remediation details", async ({
   await firstTime.focus();
   await page.keyboard.press("Enter");
 
-  await expect(page.getByText("~/.config/opencode/opencode.jsonc")).toBeVisible();
+  await expect(page.getByText("~/.config/opencode/opencode.json")).toBeVisible();
   await expect(page.getByText("/absolute/path/to/workshop/src/index.ts")).toBeVisible();
   await expect(page.getByText(/Workshop chat streams through your local OpenCode CLI/i)).toBeVisible();
 });

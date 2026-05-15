@@ -378,7 +378,14 @@ export async function createServer(port: number) {
   const opencodeCliChatEnabled =
     process.env.RAINDROP_WORKSHOP_OPENCODE_CLI_CHAT !== "0";
 
-  function cliOnPath(command: string): boolean {
+  function providerCliExecutable(provider: AgentProviderId): string {
+    if (provider === "claude") return process.env.RAINDROP_WORKSHOP_CLAUDE_BIN ?? providerCliCommand(provider);
+    if (provider === "codex") return process.env.RAINDROP_WORKSHOP_CODEX_BIN ?? providerCliCommand(provider);
+    if (provider === "opencode") return process.env.RAINDROP_WORKSHOP_OPENCODE_BIN ?? providerCliCommand(provider);
+    return providerCliCommand(provider);
+  }
+
+  function cliAvailable(command: string): boolean {
     try {
       const child = Bun.spawnSync([command, "--version"], {
         env: process.env,
@@ -399,7 +406,7 @@ export async function createServer(port: number) {
 
   function providerAvailable(provider: AgentProviderId): boolean {
     if (!providerEnabled(provider)) return false;
-    return cliOnPath(providerCliCommand(provider));
+    return cliAvailable(providerCliExecutable(provider));
   }
 
   function backendUrl(): string {

@@ -1,8 +1,8 @@
 import fs from "fs";
-import os from "os";
 import path from "path";
+import { workshopStatePath } from "./state-dir";
 
-const STATE_PATH = path.join(os.homedir(), ".raindrop", "active-workspace.json");
+const STATE_PATH = workshopStatePath("active-workspace.json");
 export const ACTIVE_WORKSPACE_MISSING_MESSAGE =
   "No active Workshop project. Run `raindrop workshop` from your agent project.";
 

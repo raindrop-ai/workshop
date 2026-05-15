@@ -64,6 +64,7 @@ export type AgentStreamEvent =
   | { type: "thinking_delta"; content: string }
   | { type: "subagent_start"; parent_id: string; subagent: string }
   | { type: "provider_session"; sessionId: string }
+  | { type: "usage"; input_tokens?: number; output_tokens?: number; cost_usd?: number }
   | { type: "done" };
 
 export interface ClaudeMessageStream {

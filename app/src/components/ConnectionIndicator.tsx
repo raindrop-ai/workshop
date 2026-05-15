@@ -36,7 +36,7 @@ function providerCommand(provider: AgentProviderId): string {
 
 function providerConfigPath(provider: AgentProviderId): string {
   if (provider === "codex") return "~/.codex/config.toml";
-  if (provider === "opencode") return "~/.config/opencode/opencode.jsonc";
+  if (provider === "opencode") return "~/.config/opencode/opencode.json";
   return "~/.claude.json";
 }
 
@@ -85,7 +85,9 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
     "curl -fsSL https://raw.githubusercontent.com/raindrop-ai/cli/main/install.sh | bash";
   const mcpAddCommand = provider === "opencode"
     ? '{ "$schema": "https://opencode.ai/config.json", "mcp": { "raindrop": { "type": "local", "command": ["bun", "/absolute/path/to/workshop/src/index.ts", "workshop", "mcp"] } } }'
-    : "claude mcp add raindrop -- bun /path/to/workshop/src/index.ts workshop mcp";
+    : provider === "codex"
+      ? 'Add `raindrop` under [mcp_servers] in ~/.codex/config.toml, or run `raindrop setup`.'
+      : "claude mcp add raindrop -- bun /path/to/workshop/src/index.ts workshop mcp";
   const dir = status.state === "green" ? cwdLabel(cwd) : "";
   const statusContent = (
     <>
@@ -153,7 +155,7 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
         </div>
       )}
       {showRemediation && status.state !== "green" && (
-        <div className="absolute right-0 top-full mt-2 w-80 rounded-lg border border-white/10 bg-zinc-900/95 backdrop-blur p-3 z-50 text-xs">
+        <div className="absolute left-0 top-full mt-2 w-80 rounded-lg border border-white/10 bg-zinc-900/95 backdrop-blur p-3 z-50 text-xs">
           <div className="text-white/80 mb-2 leading-relaxed">
             Workshop chat streams through your local {providerLabel(provider)} CLI. Make sure
             <code className="mx-1 rounded bg-black/40 px-1 font-mono">{providerCommand(provider)}</code>
@@ -183,8 +185,8 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
                 <span className="flex-1 select-all break-all">{mcpAddCommand}</span>
               </div>
               <div>
-                Workshop chat streams through {providerLabel(provider)} and
-                passes the Raindrop MCP into that session. The config entry lives in{" "}
+                Workshop chat streams through {providerLabel(provider)} and uses
+                the Raindrop MCP from your coding-tool config. The config entry lives in{" "}
                 <code className="font-mono bg-black/40 px-1 rounded">
                   {providerConfigPath(provider)}
                 </code>
