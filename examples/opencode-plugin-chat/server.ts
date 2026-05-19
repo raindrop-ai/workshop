@@ -38,7 +38,7 @@ async function resolveWorkshopRunUrl(startedAfter: number): Promise<string | nul
       const hit = rows
         .filter((r) => r.event_name === "opencode_session" && (r.started_at ?? 0) >= startedAfter)
         .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))[0];
-      if (hit) return `${WORKSHOP_BASE}/#${hit.id}`;
+      if (hit) return `${WORKSHOP_BASE}/runs/${encodeURIComponent(hit.id)}`;
     } catch {
       // keep polling
     }

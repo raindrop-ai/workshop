@@ -26,13 +26,16 @@ import type { AdapterInput, AdapterMatch, SpanAdapter } from "./adapters/types";
 import { emptyNormalized } from "./normalized";
 import { aiSdkLlmAdapter, aiSdkToolAdapter } from "./adapters/ai-sdk";
 import { claudeAgentSdkLlmAdapter } from "./adapters/claude-agent-sdk";
+import { livekitLlmAdapter, livekitToolAdapter } from "./adapters/livekit";
 import { traceloopLlmAdapter, traceloopToolAdapter } from "./adapters/traceloop";
 
 const ADAPTERS: SpanAdapter[] = [
   aiSdkLlmAdapter,
+  livekitLlmAdapter,
   traceloopLlmAdapter,
   claudeAgentSdkLlmAdapter,
   aiSdkToolAdapter,
+  livekitToolAdapter,
   traceloopToolAdapter,
 ];
 
@@ -55,7 +58,7 @@ export function adapterInputFromStoredSpan(row: {
   output_payload: string | null;
   attributes: string | null;
 }): AdapterInput {
-  let attrs: Record<string, string | number> = {};
+  let attrs: Record<string, string | number | boolean> = {};
   if (row.attributes) {
     try { attrs = JSON.parse(row.attributes); } catch { /* leave empty */ }
   }

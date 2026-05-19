@@ -137,7 +137,7 @@ async function resolveWorkshopRunUrl(startedAfter: number): Promise<string | nul
         started_at?: number;
       }>;
       const hit = rows.find((r) => (r.started_at ?? 0) >= startedAfter);
-      if (hit) return `${WORKSHOP_BASE}/#${hit.id}`;
+      if (hit) return `${WORKSHOP_BASE}/runs/${encodeURIComponent(hit.id)}`;
     } catch {
       // keep polling
     }

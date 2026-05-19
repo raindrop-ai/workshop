@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Search, Loader2, AlertCircle, ChevronDown, X, HelpCircle } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
 import { RunDetail } from "../components/RunDetail";
 import { parseMessages } from "../components/MessageList";
 import { Dots } from "../components/Icons";
@@ -8,6 +9,7 @@ import { C } from "../utils/colors";
 import { ago } from "../utils/helpers";
 import type { Run, Span, SubAgent } from "../utils/types";
 import { Markdown } from "../components/Markdown";
+import { tracePath } from "../utils/navigation";
 
 const API_BASE = "https://query.raindrop.ai";
 
@@ -261,6 +263,9 @@ function buildSearchWindows(totalDays: number): DateWindow[] {
 }
 
 export function SearchPage() {
+  const navigate = useNavigate();
+  const { runId: routeRunId } = useParams<{ runId?: string }>();
+  const selectedEventId = routeRunId ? decodeURIComponent(routeRunId) : null;
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("text");
   const [selectedSignal, setSelectedSignal] = useState<string>("");
@@ -273,7 +278,6 @@ export function SearchPage() {
   const [error, setError] = useState<string | null>(null);
   const [signals, setSignals] = useState<Signal[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
-  const [selectedEvent, setSelectedEvent] = useState<QueryEvent | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   // Chunked-pagination state. `windows` is empty in browse mode (listEvents has
   // no 14d cap); for search mode it holds the time slices we'll page through
@@ -432,6 +436,11 @@ export function SearchPage() {
     }
   }, [dateRange]);
 
+  const selectedEvent = useMemo(
+    () => selectedEventId ? results.find((evt) => evt.id === selectedEventId) ?? null : null,
+    [results, selectedEventId],
+  );
+
   return (
     <div className="relative h-full overflow-hidden">
       <div
@@ -517,7 +526,7 @@ export function SearchPage() {
             </div>
           )}
           {!loading && results.map(evt => (
-            <ResultItem key={evt.id} event={evt} selected={selectedEvent?.id === evt.id} onClick={() => setSelectedEvent(evt)} />
+            <ResultItem key={evt.id} event={evt} selected={selectedEventId === evt.id} onClick={() => navigate(tracePath("/search", evt.id))} />
           ))}
           {!loading && hasMore && (
             <div className="pt-1">
@@ -532,13 +541,15 @@ export function SearchPage() {
 
 
       <div className="flex-1 min-w-0 overflow-hidden">
-        {selectedEvent
-          ? <RemoteRunDetail key={selectedEvent.id} event={selectedEvent} />
-          : <SearchWelcome
-              hasResults={results.length > 0}
-              loading={loading}
-              onExample={runExample}
-            />
+        {selectedEventId
+          ? <RemoteRunDetail key={selectedEventId} eventId={selectedEventId} event={selectedEvent ?? undefined} />
+          : hasQueryKey
+            ? <SearchWelcome
+                hasResults={results.length > 0}
+                loading={loading}
+                onExample={runExample}
+              />
+            : null
         }
       </div>
       </div>
@@ -769,7 +780,7 @@ function ResultItem({ event, selected, onClick }: { event: QueryEvent; selected:
   );
 }
 
-function RemoteRunDetail({ event }: { event: QueryEvent }) {
+function RemoteRunDetail({ eventId, event }: { eventId: string; event?: QueryEvent }) {
   const [spans, setSpans] = useState<Span[]>([]);
   const [traceLoading, setTraceLoading] = useState(true);
   const [traceError, setTraceError] = useState<string | null>(null);
@@ -778,17 +789,17 @@ function RemoteRunDetail({ event }: { event: QueryEvent }) {
     setTraceLoading(true);
     setTraceError(null);
 
-    fetch(`/api/saved-runs/cache/${event.id}`)
+    fetch(`/api/saved-runs/cache/${eventId}`)
       .then(r => r.ok ? r.json() : null)
       .then(async (cached) => {
         if (cached?.spans?.length) {
           setSpans(cached.spans);
           return;
         }
-        const traces = await fetchTraces(event.id);
-        const mapped = mapTraceToSpans(traces, event.id);
+        const traces = await fetchTraces(eventId);
+        const mapped = mapTraceToSpans(traces, eventId);
         setSpans(mapped);
-        fetch(`/api/saved-runs/cache/${event.id}`, {
+        fetch(`/api/saved-runs/cache/${eventId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ spans: mapped }),
@@ -796,7 +807,7 @@ function RemoteRunDetail({ event }: { event: QueryEvent }) {
       })
       .catch(e => setTraceError(e.message ?? "Failed to load traces"))
       .finally(() => setTraceLoading(false));
-  }, [event.id]);
+  }, [eventId]);
 
   if (traceLoading) {
     return <div className="h-full flex items-center justify-center gap-2" style={{ color: C.fg1 }}>
@@ -823,15 +834,16 @@ function RemoteRunDetail({ event }: { event: QueryEvent }) {
   const startMs = Math.min(...spans.map(s => s.start_time_ms));
   const endMs = Math.max(...spans.map(s => s.end_time_ms));
   const run: Run = {
-    id: event.id, name: null as any, event_name: event.event_name,
-    user_id: event.user_id, convo_id: event.convo_id,
+    id: eventId, name: null as any, event_name: event?.event_name ?? eventId,
+    user_id: event?.user_id ?? null, convo_id: event?.convo_id ?? null,
     started_at: startMs, last_updated_at: endMs,
     metadata: null as any, model: spans.find(s => s.model)?.model ?? null,
     finished: 1,
   } as Run;
 
   return <RunDetail
-    runId={event.id}
+    runId={eventId}
+    routeBase="/search"
     source="cloud"
     initialData={{ run, spans, liveEvents: [], subAgents: detectSubAgents(spans) }}
   />;

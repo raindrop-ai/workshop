@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark, Loader2, Trash2, ChevronDown, FolderPlus, Folder, Check, Search, X, SlidersHorizontal, MessageSquareText } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
 import { RunDetail } from "../components/RunDetail";
 import { C } from "../utils/colors";
+import { tracePath } from "../utils/navigation";
 
 export interface SavedEvent {
   id: string;
@@ -707,9 +709,11 @@ async function summarizeAndUpdate(event: SavedEvent): Promise<void> {
 }
 
 export function SavedPage() {
+  const navigate = useNavigate();
+  const { runId: routeRunId } = useParams<{ runId?: string }>();
+  const selectedId = routeRunId ? decodeURIComponent(routeRunId) : null;
   const [events, setEvents] = useState<SavedEvent[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const { filters, update, resetSecondary } = useFilters();
 
   const reload = useCallback(() => { setEvents(getSavedEvents()); setFolders(getFolders()); }, []);
@@ -749,7 +753,7 @@ export function SavedPage() {
 
   const handleRemove = (id: string) => {
     removeSavedEvent(id);
-    if (selectedId === id) setSelectedId(null);
+    if (selectedId === id) navigate("/saved", { replace: true });
     reload();
   };
 
@@ -803,7 +807,7 @@ export function SavedPage() {
               key={evt.id}
               event={evt}
               selected={selectedId === evt.id}
-              onClick={() => setSelectedId(evt.id)}
+              onClick={() => navigate(tracePath("/saved", evt.id))}
               onRemove={() => handleRemove(evt.id)}
               onMove={(folder) => { updateSavedEvent(evt.id, { folder }); if (folder) addFolder(folder); reload(); }}
             />
@@ -813,15 +817,15 @@ export function SavedPage() {
 
 
       <div className={`flex-1 min-w-0 overflow-hidden ${isEmpty ? "opacity-40" : ""}`}>
-        {selectedEvent
-          ? <SavedRunDetail key={selectedEvent.id} event={selectedEvent} />
-          : <div className="h-full flex items-center justify-center">
-              <div className="text-center space-y-2">
-                <Bookmark className="mx-auto h-6 w-6" style={{ color: C.fg0 }} />
-                <div className="text-[11px]" style={{ color: C.fg0 }}>Select a saved event to view its trace</div>
-              </div>
+        {selectedEvent && <SavedRunDetail key={selectedEvent.id} event={selectedEvent} />}
+        {!selectedEvent && !isEmpty && (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center space-y-2">
+              <Bookmark className="mx-auto h-6 w-6" style={{ color: C.fg0 }} />
+              <div className="text-[11px]" style={{ color: C.fg0 }}>Select a saved event to view its trace</div>
             </div>
-        }
+          </div>
+        )}
       </div>
 
 
@@ -992,21 +996,16 @@ function SavedRunDetail({ event }: { event: SavedEvent }) {
   if (hasLocalRun) {
     return (
       <div className="h-full overflow-auto sb">
-        <RunDetail runId={event.id} />
+        <RunDetail runId={event.id} routeBase="/saved" />
       </div>
     );
   }
 
   // Cloud event — try loading via Query API (checks server cache first)
-  return <CloudTraceDetail eventId={event.id} eventName={event.event_name} />;
+  return <CloudTraceDetail event={event} />;
 }
 
 // Inline cloud trace viewer — same as RemoteRunDetail in SearchPage but standalone
-import NumberFlow from "@number-flow/react";
-import { ChatFlow } from "../components/ChatFlow";
-import { SpanTree } from "../components/SpanTree";
-import { detectProvider } from "../utils/helpers";
-import { getCostBreakdown, fmtCost } from "../utils/costs";
 import type { Span, SubAgent } from "../utils/types";
 
 const API_BASE = "https://query.raindrop.ai";
@@ -1093,34 +1092,17 @@ function detectSubAgentsFromSpans(spans: Span[]): SubAgent[] {
   return agents;
 }
 
-function getTokensByModel(spans: Span[]): Map<string, { inTok: number; outTok: number }> {
-  const byModel = new Map<string, { inTok: number; outTok: number }>();
-  const llmIds = new Set(spans.filter(s => s.span_type?.includes("LLM")).map(s => s.id));
-  for (const s of spans) {
-    if (!s.model || !s.span_type?.includes("LLM") || !(s.input_tokens || s.output_tokens)) continue;
-    if (s.parent_span_id && llmIds.has(s.parent_span_id)) continue;
-    const e = byModel.get(s.model) ?? { inTok: 0, outTok: 0 };
-    e.inTok += s.input_tokens ?? 0; e.outTok += s.output_tokens ?? 0;
-    byModel.set(s.model, e);
-  }
-  return byModel;
-}
-
-const Sep = () => <span style={{ color: C.fg0, opacity: 0.4 }}>|</span>;
-
-function CloudTraceDetail({ eventId, eventName }: { eventId: string; eventName: string }) {
+function CloudTraceDetail({ event }: { event: SavedEvent }) {
   const [spans, setSpans] = useState<Span[]>([]);
   const [subAgents, setSubAgents] = useState<SubAgent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<"chat" | "tree">("chat");
-  const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true); setError(null); setFocusedAgent(null); setTab("chat");
+    setLoading(true); setError(null);
 
     // Try server cache first, then cloud API
-    fetch(`/api/saved-runs/cache/${eventId}`)
+    fetch(`/api/saved-runs/cache/${event.id}`)
       .then(r => r.ok ? r.json() : null)
       .then(cached => {
         if (cached?.type === "cloud" && cached.spans) {
@@ -1129,11 +1111,11 @@ function CloudTraceDetail({ eventId, eventName }: { eventId: string; eventName: 
           setLoading(false);
           return;
         }
-        return fetchCloudTraces(eventId).then(traces => {
-          const m = mapTraceToSpans(traces, eventId);
+        return fetchCloudTraces(event.id).then(traces => {
+          const m = mapTraceToSpans(traces, event.id);
           setSpans(m); setSubAgents(detectSubAgentsFromSpans(m));
           // Cache to server
-          fetch(`/api/saved-runs/cache/${eventId}`, {
+          fetch(`/api/saved-runs/cache/${event.id}`, {
             method: "PUT", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ type: "cloud", spans: m }),
           }).catch(() => {});
@@ -1141,79 +1123,35 @@ function CloudTraceDetail({ eventId, eventName }: { eventId: string; eventName: 
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [eventId]);
-
-  const tools = useMemo(() => spans.filter(s => s.span_type === "TOOL_CALL"), [spans]);
-  const errs = useMemo(() => spans.filter(s => s.status === "ERROR"), [spans]);
-  const model = useMemo(() => spans.find(s => s.model)?.model ?? null, [spans]);
-  const dur = useMemo(() => spans.length === 0 ? 0 : Math.max(...spans.map(s => s.end_time_ms)) - Math.min(...spans.map(s => s.start_time_ms)), [spans]);
-  const tokensByModel = useMemo(() => getTokensByModel(spans), [spans]);
-  const inTokens = [...tokensByModel.values()].reduce((s, v) => s + v.inTok, 0);
-  const outTokens = [...tokensByModel.values()].reduce((s, v) => s + v.outTok, 0);
-
-  const agent = focusedAgent ? subAgents.find(a => a.root_span_id === focusedAgent) : null;
+  }, [event.id]);
 
   if (loading) return <div className="h-full flex items-center justify-center gap-2" style={{ color: C.fg1 }}><Loader2 className="h-4 w-4 animate-spin" /> Loading trace...</div>;
   if (error) return <div className="h-full flex items-center justify-center"><div className="text-[11px]" style={{ color: C.red }}>{error}</div></div>;
   if (spans.length === 0) return <div className="h-full flex items-center justify-center"><div className="text-[11px]" style={{ color: C.fg0 }}>No trace data</div></div>;
 
-  const tabStyle = (k: string) => ({
-    padding: "8px 12px", fontSize: "12px", fontWeight: 500, cursor: "pointer" as const,
-    background: "none", border: "none", color: tab === k ? C.fg5 : C.fg0,
-    borderBottom: tab === k ? `2px solid ${C.fg4}` : "2px solid transparent",
-  });
-
-  if (agent) {
-    const agentSpanSet = new Set(agent.span_ids);
-    const agentSpans = spans.filter(s => agentSpanSet.has(s.id) && s.id !== agent.root_span_id);
-    return (
-      <div className="h-full flex flex-col">
-        <div className="flex-shrink-0 px-4 py-3" style={{ borderBottom: `1px solid ${C.border}` }}>
-          <button className="text-[11px] font-mono mb-2 hover:underline" style={{ color: C.fg1 }} onClick={() => setFocusedAgent(null)}>&larr; Back</button>
-          <h2 style={{ fontSize: 16, fontWeight: 600, color: C.fg5 }}>{agent.name}</h2>
-        </div>
-        <div className="flex-shrink-0 flex" style={{ borderBottom: `1px solid ${C.border}`, paddingLeft: 16 }}>
-          <button style={tabStyle("chat")} onClick={() => setTab("chat")}>Overview</button>
-          <button style={tabStyle("tree")} onClick={() => setTab("tree")}>Span Tree</button>
-        </div>
-        <div className="flex-1 overflow-auto sb" style={{ padding: tab === "chat" ? 0 : 16 }}>
-          {tab === "chat" && <ChatFlow spans={agentSpans} liveEvents={[]} subAgents={[]} onDiveIn={setFocusedAgent} />}
-          {tab === "tree" && <SpanTree spans={agentSpans} />}
-        </div>
-      </div>
-    );
-  }
-
-  const durSec = Math.round(dur / 1000);
-  const durMin = Math.floor(durSec / 60);
-  const durRemSec = durSec % 60;
-  const totalCost = [...tokensByModel.entries()].reduce((sum, [m, { inTok, outTok }]) => sum + (getCostBreakdown(m, inTok, outTok)?.totalCost ?? 0), 0);
+  const startMs = Math.min(...spans.map(s => s.start_time_ms));
+  const endMs = Math.max(...spans.map(s => s.end_time_ms));
+  const run: Run = {
+    id: event.id,
+    name: null,
+    event_name: event.event_name,
+    user_id: event.user_id,
+    convo_id: event.convo_id,
+    started_at: startMs,
+    last_updated_at: endMs,
+    metadata: null,
+    model: spans.find(s => s.model)?.model ?? null,
+    finished: 1,
+  };
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="flex-shrink-0 px-4 py-3" style={{ borderBottom: `1px solid ${C.border}` }}>
-        <div className="flex items-center gap-3 mb-1.5">
-          <h2 style={{ fontSize: 18, fontWeight: 600, color: C.fg5 }}>{eventName}</h2>
-          {model && <span className="text-[10px] px-2 py-0.5 rounded font-mono" style={{ background: "rgba(255,255,255,0.04)", color: C.fg1 }}>{model}</span>}
-          {(() => { const p = detectProvider(model, null); return p ? <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded" style={{ color: C.fg1, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.08)" }}>{p.label}</span> : null; })()}
-        </div>
-        <div className="flex items-center gap-2 text-xs font-mono flex-wrap" style={{ color: C.fg1 }}>
-          <span><NumberFlow value={tools.length} /> tools</span>
-          {subAgents.length > 0 && <><Sep /><span>{subAgents.length} sub-agents</span></>}
-          {errs.length > 0 && <><Sep /><span style={{ color: C.red }}>{errs.length} errors</span></>}
-          <Sep /><span>{durMin > 0 ? `${durMin}m ${durRemSec}s` : `${durSec}s`}</span>
-          {(inTokens > 0 || outTokens > 0) && <><Sep /><span>{inTokens} in</span><Sep /><span>{outTokens} out</span></>}
-          {totalCost > 0 && <><Sep /><span>{fmtCost(totalCost)}</span></>}
-        </div>
-      </div>
-      <div className="flex-shrink-0 flex" style={{ borderBottom: `1px solid ${C.border}`, paddingLeft: 16 }}>
-        <button style={tabStyle("chat")} onClick={() => setTab("chat")}>Overview</button>
-        <button style={tabStyle("tree")} onClick={() => setTab("tree")}>Span Tree</button>
-      </div>
-      <div className="flex-1 overflow-auto sb" style={{ padding: tab === "chat" ? 0 : 16 }}>
-        {tab === "chat" && <ChatFlow spans={spans} liveEvents={[]} subAgents={subAgents} onDiveIn={setFocusedAgent} />}
-        {tab === "tree" && <SpanTree spans={spans} />}
-      </div>
+    <div className="h-full overflow-auto sb">
+      <RunDetail
+        runId={event.id}
+        routeBase="/saved"
+        source="cloud"
+        initialData={{ run, spans, liveEvents: [], subAgents }}
+      />
     </div>
   );
 }

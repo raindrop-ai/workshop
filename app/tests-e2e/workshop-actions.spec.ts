@@ -90,7 +90,7 @@ test("workshop UI: span tree + side panel render seeded run", async ({ page, wor
   const dbSpans = await readWorkshopSpans(workshop.url, FIXTURE_RUN_ID);
   expect(dbSpans.length).toBe(FIXTURE_SPAN_COUNT);
 
-  await page.goto(`${workshop.url}/#${FIXTURE_RUN_ID}`);
+  await page.goto(`${workshop.url}/runs/${FIXTURE_RUN_ID}`);
 
   // Header shows the run's event_name.
   await expect(page.getByText(FIXTURE_EVENT_NAME).first()).toBeVisible({ timeout: 10_000 });
@@ -109,22 +109,13 @@ test("workshop UI: span tree + side panel render seeded run", async ({ page, wor
     await expect(page.locator(`[data-span-row="${s.id}"]`)).toBeVisible({ timeout: 5_000 });
   }
 
-  // Side panel: clicking a row opens SpanDetail with Input/Output
-  // sections. Click the root span explicitly (the row click handler is
-  // a toggle, and selection on mount isn't guaranteed, so always click
-  // the row we want to inspect).
-  // The root span carries the user prompt in input_payload — assert
-  // both labels appear AND the prompt text is visible in the detail pane.
-  const rootRow = page.locator(`[data-span-row="${dbSpans[0].id}"]`);
-  // First click to ensure it's selected (deselected on second click, so
-  // re-click only if needed by re-asserting selection visually).
-  await rootRow.click();
-  // SpanTree renders <div>Input</div> + <div>Output</div> (with uppercase
-  // CSS transform) inside the detail panel — match the raw DOM text.
-  const inputLabel = page.getByText(/^Input$/).first();
-  if (!(await inputLabel.isVisible().catch(() => false))) {
-    await rootRow.click(); // first click may have been a deselect
-  }
+  // Side panel: clicking a row opens SpanDetail with Input/Output sections.
+  // Select a DB-backed span that has both payloads and wait for the routed
+  // `/span/:id` selection before asserting the detail pane.
+  const detailSpan = dbSpans.find((span) => span.input_payload && span.output_payload);
+  expect(detailSpan, "expected at least one seeded span with input and output payloads").toBeTruthy();
+  await page.locator(`[data-span-row="${detailSpan!.id}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/span/${detailSpan!.id}(?:[/?#]|$)`));
   await expect(page.getByText(/^Input$/).first()).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/^Output$/).first()).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/Fix the typo in README\.md/).first()).toBeVisible({ timeout: 5_000 });
@@ -171,7 +162,7 @@ test("workshop UI: switching between runs preserves each run's span tree", async
     await page.getByRole("button", { name: /^span tree$/i }).click();
   };
 
-  await page.goto(`${workshop.url}/#${RUN_A}`);
+  await page.goto(`${workshop.url}/runs/${RUN_A}`);
   await openSpanTree();
   const rows = page.locator("[data-span-row]");
   // Same `>=` rationale as line 104: the renderer may add synthetic

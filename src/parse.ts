@@ -6,7 +6,7 @@ export interface ParsedSpan {
   traceId: string; spanId: string; parentSpanId?: string; name: string; spanType: string;
   status: string; inputPayload?: string; outputPayload?: string; startTimeMs: number;
   endTimeMs: number; durationMs: number; model?: string; provider?: string;
-  inputTokens?: number; outputTokens?: number; attributes: Record<string, string | number>;
+  inputTokens?: number; outputTokens?: number; attributes: Record<string, string | number | boolean>;
   eventId?: string; eventName?: string; userId?: string; convoId?: string;
   replayRunId?: string;
   /**
@@ -17,16 +17,17 @@ export interface ParsedSpan {
   normalized: NormalizedSpan;
 }
 
-function getAttr(attrs: any[], key: string): string | number | undefined {
+function getAttr(attrs: any[], key: string): string | number | boolean | undefined {
   const a = attrs?.find((x: any) => x.key === key);
   if (!a?.value) return undefined;
   if (a.value.stringValue !== undefined) return a.value.stringValue;
   if (a.value.intValue !== undefined) return Number(a.value.intValue);
   if (a.value.doubleValue !== undefined) return a.value.doubleValue;
+  if (a.value.boolValue !== undefined) return a.value.boolValue;
   return undefined;
 }
 
-function first(attrs: any[], ...keys: string[]): string | number | undefined {
+function first(attrs: any[], ...keys: string[]): string | number | boolean | undefined {
   for (const k of keys) { const v = getAttr(attrs, k); if (v !== undefined) return v; }
   return undefined;
 }
@@ -36,7 +37,7 @@ function inferSpanType(
   traceloopKind?: string,
   hasToolName = false,
   raindropSpanKind?: string,
-  attrs: Record<string, string | number> = {},
+  attrs: Record<string, string | number | boolean> = {},
 ): "LLM_GENERATION" | "TOOL_CALL" | "AGENT_ROOT" | "TRACE" | "INTERNAL" {
   // The SDK is the source of truth when it has declared a role explicitly via
   // `raindrop.span.kind`. Trusting the tag — instead of pattern-matching on
@@ -56,6 +57,7 @@ function inferSpanType(
   if (traceloopKind === "tool") return "TOOL_CALL";
   if (traceloopKind === "llm") return "LLM_GENERATION";
   if (isGenAiInferenceSpan(attrs)) return "LLM_GENERATION";
+  if (typeof attrs["lk.chat_ctx"] === "string") return "LLM_GENERATION";
   if (typeof operationId === "string") {
     if (operationId === "ai.toolCall") return "TOOL_CALL";
     if (operationId === "chat" || operationId === "llm" || operationId === "generation" || operationId === "response") return "LLM_GENERATION";
@@ -66,7 +68,7 @@ function inferSpanType(
   return "INTERNAL";
 }
 
-function isGenAiInferenceSpan(attrs: Record<string, string | number>): boolean {
+function isGenAiInferenceSpan(attrs: Record<string, string | number | boolean>): boolean {
   const operationName = attrs["gen_ai.operation.name"];
   if (
     operationName === "chat" ||
@@ -86,7 +88,7 @@ function isGenAiInferenceSpan(attrs: Record<string, string | number>): boolean {
   return hasIndexedAttr(attrs, "gen_ai.prompt.") || hasIndexedAttr(attrs, "gen_ai.completion.");
 }
 
-function hasIndexedAttr(attrs: Record<string, string | number>, prefix: string): boolean {
+function hasIndexedAttr(attrs: Record<string, string | number | boolean>, prefix: string): boolean {
   return Object.keys(attrs).some((key) => key.startsWith(prefix));
 }
 
@@ -130,7 +132,7 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
         const endNs = BigInt(s.endTimeUnixNano || "0");
         const startMs = Number(startNs / 1_000_000n);
         const endMs = Number(endNs / 1_000_000n);
-        const allAttrs: Record<string, string | number> = {};
+        const allAttrs: Record<string, string | number | boolean> = {};
         for (const a of attrs) { const v = getAttr([a], a.key); if (v !== undefined) allAttrs[a.key] = v; }
         if (typeof s.status?.code === "number") allAttrs["otel.status.code"] = s.status.code;
         const errorMessage = spanErrorMessage(s);
@@ -139,7 +141,7 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
         const operationId = getAttr(attrs, "ai.operationId") as string | undefined;
         const traceloopKind = getAttr(attrs, "traceloop.span.kind") as string | undefined;
         const raindropSpanKind = getAttr(attrs, "raindrop.span.kind") as string | undefined;
-        const toolCallName = first(attrs, "ai.toolCall.name", "tool.name") as string | undefined;
+        const toolCallName = first(attrs, "ai.toolCall.name", "tool.name", "lk.function_tool.name") as string | undefined;
         const spanType = inferSpanType(operationId, traceloopKind, !!toolCallName, raindropSpanKind, allAttrs);
 
         // For tool calls, prefer the actual tool name over generic wrapper
@@ -173,8 +175,8 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
           outputPayload = first(attrs, "traceloop.entity.output", "tool.output") as string | undefined;
         }
 
-        const model = first(attrs, "ai.model.id", "ai.response.model", "gen_ai.request.model", "llm.request.model") as string | undefined;
-        const provider = first(attrs, "ai.model.provider", "gen_ai.system", "llm.system") as string | undefined;
+        const model = first(attrs, "ai.model.id", "ai.response.model", "gen_ai.request.model", "gen_ai.response.model", "llm.request.model") as string | undefined;
+        const provider = first(attrs, "ai.model.provider", "gen_ai.system", "gen_ai.provider.name", "llm.system") as string | undefined;
         const inputTokens = first(attrs, "ai.usage.inputTokens", "ai.usage.promptTokens", "ai.usage.prompt_tokens", "gen_ai.usage.input_tokens") as number | undefined;
         const outputTokens = first(attrs, "ai.usage.outputTokens", "ai.usage.completionTokens", "ai.usage.completion_tokens", "gen_ai.usage.output_tokens") as number | undefined;
 

@@ -110,7 +110,7 @@ function setupReplay(config: ReplayConfig, sourceRun: any, broadcast: (event: st
 
   const replayName = `Replay of ${sourceEventName}-${config.sourceRunId.slice(0, 4)} (#${replayCount})`;
 
-  // Create a placeholder run in DB so the URL the UI navigates to (`#<replayRunId>`)
+  // Create a placeholder run in DB so the URL the UI navigates to (`/runs/<replayRunId>`)
   // always resolves to something. If stitching to the agent's OTLP run succeeds
   // (the common case), we'll redirect the UI to that run on `replay_complete`.
   // If stitching fails — agent crashed before any span shipped, agent didn't echo

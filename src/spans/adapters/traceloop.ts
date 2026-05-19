@@ -98,7 +98,7 @@ export const traceloopLlmAdapter: SpanAdapter = {
   },
 };
 
-function isCurrentGenAiSpan(attrs: Record<string, string | number>): boolean {
+function isCurrentGenAiSpan(attrs: Record<string, string | number | boolean>): boolean {
   const operationName = attrs["gen_ai.operation.name"];
   return operationName === "chat" ||
     operationName === "text_completion" ||
@@ -107,18 +107,18 @@ function isCurrentGenAiSpan(attrs: Record<string, string | number>): boolean {
     typeof attrs["gen_ai.output.messages"] === "string";
 }
 
-function isLegacyGenAiSpan(attrs: Record<string, string | number>): boolean {
+function isLegacyGenAiSpan(attrs: Record<string, string | number | boolean>): boolean {
   return attrs["llm.request.type"] === "chat" ||
     attrs["llm.request.type"] === "completion" ||
     hasIndexedAttr(attrs, "gen_ai.prompt.") ||
     hasIndexedAttr(attrs, "gen_ai.completion.");
 }
 
-function hasIndexedAttr(attrs: Record<string, string | number>, prefix: string): boolean {
+function hasIndexedAttr(attrs: Record<string, string | number | boolean>, prefix: string): boolean {
   return Object.keys(attrs).some((key) => key.startsWith(prefix));
 }
 
-function normalizeGenAiMessages(attrs: Record<string, string | number>): {
+function normalizeGenAiMessages(attrs: Record<string, string | number | boolean>): {
   messages: NormalizedMessage[];
   systemPrompt: string;
   inputPayload?: string;
@@ -129,7 +129,7 @@ function normalizeGenAiMessages(attrs: Record<string, string | number>): {
   return normalizeLegacyIndexedGenAiMessages(attrs);
 }
 
-function normalizeCurrentGenAiMessages(attrs: Record<string, string | number>) {
+function normalizeCurrentGenAiMessages(attrs: Record<string, string | number | boolean>) {
   const inputRaw = attrs["gen_ai.input.messages"] as string | undefined;
   const outputRaw = attrs["gen_ai.output.messages"] as string | undefined;
   const systemRaw = attrs["gen_ai.system_instructions"] as string | undefined;
@@ -156,7 +156,7 @@ function normalizeCurrentGenAiMessages(attrs: Record<string, string | number>) {
   };
 }
 
-function normalizeLegacyIndexedGenAiMessages(attrs: Record<string, string | number>) {
+function normalizeLegacyIndexedGenAiMessages(attrs: Record<string, string | number | boolean>) {
   const promptIndexes = indexedAttrNumbers(attrs, "gen_ai.prompt.");
   const completionIndexes = indexedAttrNumbers(attrs, "gen_ai.completion.");
   if (promptIndexes.length === 0 && completionIndexes.length === 0) return null;
@@ -226,7 +226,7 @@ function toolCallIdFromPart(part: unknown): string | undefined {
   return typeof id === "string" ? id : undefined;
 }
 
-function indexedAttrNumbers(attrs: Record<string, string | number>, prefix: string): number[] {
+function indexedAttrNumbers(attrs: Record<string, string | number | boolean>, prefix: string): number[] {
   const indexes = new Set<number>();
   for (const key of Object.keys(attrs)) {
     if (!key.startsWith(prefix)) continue;

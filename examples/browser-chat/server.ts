@@ -308,7 +308,7 @@ export async function startServer(port = DEFAULT_PORT) {
         }>;
         const hit = rows.find((r) => r.event_id === eventId);
         if (hit) {
-          res.json({ url: `${WORKSHOP_BASE}/#${hit.id}` });
+          res.json({ url: `${WORKSHOP_BASE}/runs/${encodeURIComponent(hit.id)}` });
           return;
         }
       } catch { /* keep polling */ }

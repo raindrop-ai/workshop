@@ -8,8 +8,8 @@ import type { NormalizedSpan } from "../normalized";
 export interface AdapterInput {
   /** OTLP span name (e.g. `"ai.streamText"`, `"ai.toolCall"`). */
   spanName: string;
-  /** Flat attribute record. String / number values; nested JSON is left as a string. */
-  attrs: Record<string, string | number>;
+  /** Flat attribute record. String / number / boolean values; nested JSON is left as a string. */
+  attrs: Record<string, string | number | boolean>;
   /**
    * Already-inferred span type — saves adapters from re-deriving it.
    * `AGENT_ROOT` is the outer orchestration span (e.g. `ai.streamText`,

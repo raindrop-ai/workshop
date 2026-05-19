@@ -7,6 +7,7 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { normalizeOtelId } from "./ids";
 import { parseOtlpRequest } from "./parse";
+import { decodeOtlpProtobuf } from "./otlp-protobuf";
 import { upsertRun, insertSpan, upsertEventSpan, findRunByEventId, adoptRunByEventId, getRuns, getRunWithSpans, getRunsByConvoId, clearAll, upsertLiveEvent, getLiveEvents, cacheSavedRun, getCachedRun, deleteCachedRun, deleteRun, getSpanMeta, getSpanById, getSpanPayloadColumn, getSpanContext, getMostRecentlyTouchedRun, getRunById, getRunOutline, listSpansFiltered, searchRun, tailLiveEvents, listSavedEvents, getSavedEvent, upsertSavedEvent, patchSavedEvent, deleteSavedEvent, listSavedFolders, ensureSavedFolder, deleteSavedFolder, queryTraces, type SavedEventRow } from "./db";
 import { sliceSpanPayload } from "./payload-slice";
 import { detectSubAgents } from "./agents";
@@ -441,16 +442,18 @@ export async function createServer(port: number) {
     });
   });
 
+  const INGEST_PATHS = new Set([
+    "/v1/events/track",
+    "/v1/events/track_partial",
+    "/v1/users/identify",
+    "/v1/signals/track",
+  ]);
+
   // CORS for the ingestion routes browser SDKs actually post to —
   // narrower than `/v1/*` so future routes under that prefix don't
   // inherit cross-origin access by default.
   app.use(
-    [
-      "/v1/events/track",
-      "/v1/events/track_partial",
-      "/v1/users/identify",
-      "/v1/signals/track",
-    ],
+    [...INGEST_PATHS],
     (req, res, next) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -459,6 +462,30 @@ export async function createServer(port: number) {
       next();
     },
   );
+
+  // Block cross-origin requests to everything except the ingestion routes
+  // (handled above). Non-browser callers (MCP stdio, curl, local SDKs) don't
+  // send Origin/Host so they pass through unaffected.
+  app.use((req, res, next) => {
+    if (INGEST_PATHS.has(req.path)) return next();
+    const host = req.headers.host ?? "";
+    const hostName = host.split(":")[0];
+    if (hostName && hostName !== "127.0.0.1" && hostName !== "localhost") {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    const origin = req.headers.origin;
+    if (origin) {
+      try {
+        const u = new URL(origin);
+        if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") {
+          return res.status(403).json({ error: "forbidden" });
+        }
+      } catch {
+        return res.status(403).json({ error: "forbidden" });
+      }
+    }
+    next();
+  });
 
   app.use(express.json({ limit: "50mb" }));
   // Accept protobuf bodies so Traceloop OTLP exports aren't silently dropped
@@ -502,13 +529,17 @@ export async function createServer(port: number) {
   // Shared OTLP trace ingestion handler
   function ingestTraces(req: any, res: any) {
     try {
-      // If body is a Buffer (protobuf), we can't parse it yet — acknowledge but skip
-      if (Buffer.isBuffer(req.body)) {
-        console.warn("[workshop] Received protobuf OTLP export — set OTEL_EXPORTER_OTLP_PROTOCOL=http/json for local debugging");
-        res.json({ ok: true, spansIngested: 0, warning: "protobuf not supported, use http/json" });
-        return;
+      let body = req.body;
+      if (Buffer.isBuffer(body)) {
+        try {
+          body = decodeOtlpProtobuf(body);
+        } catch (err) {
+          console.error("[workshop] Failed to decode protobuf OTLP:", err);
+          res.status(400).json({ error: "Failed to decode protobuf OTLP body" });
+          return;
+        }
       }
-      const spans = parseOtlpRequest(req.body);
+      const spans = parseOtlpRequest(body);
       if (spans.length === 0) { res.json({ ok: true, spansIngested: 0 }); return; }
 
       const byTrace = new Map<string, typeof spans>();

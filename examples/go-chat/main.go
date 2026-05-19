@@ -701,7 +701,7 @@ func (s *appState) resolveWorkshopRunURL(ctx context.Context, startedAfterMs int
 				resp.Body.Close()
 				for _, row := range rows {
 					if row.StartedAt >= startedAfterMs {
-						return s.workshopBase + "/#" + row.ID
+						return s.workshopBase + "/runs/" + url.PathEscape(row.ID)
 					}
 				}
 			}

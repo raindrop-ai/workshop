@@ -202,8 +202,20 @@ export async function runStandardChatTurn(
 
   const workshopUrl = await link.getAttribute("href");
   if (!workshopUrl) throw new Error("workshop link href missing");
-  if (!/#[0-9a-f-]+$/i.test(workshopUrl)) throw new Error(`unexpected workshop href shape: ${workshopUrl}`);
-  return { workshopUrl, runId: workshopUrl.split("#")[1] };
+  const runId = extractRunIdFromWorkshopUrl(workshopUrl);
+  return { workshopUrl, runId };
+}
+
+function extractRunIdFromWorkshopUrl(workshopUrl: string): string {
+  const runPathMatch = workshopUrl.match(/\/runs\/([^/?#]+)/i);
+  const hashMatch = workshopUrl.match(/#([0-9a-f-]+)$/i);
+  const runId = runPathMatch?.[1] ?? hashMatch?.[1];
+  if (!runId) throw new Error(`unexpected workshop href shape: ${workshopUrl}`);
+  return decodeURIComponent(runId);
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export type RunOutline = {
@@ -315,12 +327,14 @@ export async function verifyRunDetailUi(
   await expect.poll(async () => rows.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(min);
 
   // Side panel: clicking a row opens SpanDetail with Input/Output sections.
-  // The row click handler toggles selection, so click twice if the first
-  // click happened on an already-selected row (deselect).
-  const firstRow = rows.first();
-  await firstRow.click();
-  const inputLabel = page.getByText(/^Input$/).first();
-  if (!(await inputLabel.isVisible().catch(() => false))) await firstRow.click();
+  // Pick a span that actually has both payloads; root/internal spans from some
+  // providers can be input-only, so "first row" is not a stable detail target.
+  const runId = extractRunIdFromWorkshopUrl(workshopUrl);
+  const detailSpan = (await fetchSpansViaApi(new URL(workshopUrl).origin, runId))
+    .find((span) => span.input_preview && span.output_preview);
+  if (!detailSpan) throw new Error(`no span with input and output payload found for run ${runId}`);
+  await page.locator(`[data-span-row="${detailSpan.id}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`/span/${escapeRegex(encodeURIComponent(detailSpan.id))}(?:[/?#]|$)`));
   await expect(page.getByText(/^Input$/).first()).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/^Output$/).first()).toBeVisible({ timeout: 5_000 });
 }

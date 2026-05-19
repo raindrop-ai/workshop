@@ -14,7 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 from aiohttp import web
@@ -124,7 +124,7 @@ async def resolve_workshop_run_url(started_after_ms: int) -> str | None:
                 if isinstance(rows, list):
                     for row in rows:
                         if (row.get("started_at") or 0) >= started_after_ms:
-                            return f"{WORKSHOP_BASE}/#{row['id']}"
+                            return f"{WORKSHOP_BASE}/runs/{quote(str(row['id']), safe='')}"
             except Exception:
                 pass
             await asyncio.sleep(0.2)

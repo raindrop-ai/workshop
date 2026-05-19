@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
+import {
+  createBrowserRouter,
+  Navigate,
+  Outlet,
+  useLocation,
+  useMatch,
+  useNavigate,
+} from "react-router-dom";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
-import { NavSidebar, type Page } from "./components/NavSidebar";
+import { NavSidebar } from "./components/NavSidebar";
 import { MessagePane } from "./components/MessagePane";
 import { RunsPage } from "./pages/RunsPage";
 import { SearchPage } from "./pages/SearchPage";
@@ -8,43 +16,30 @@ import { SavedPage } from "./pages/SavedPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { sendWorkshopMessage, useWorkshopConnected } from "./hooks/use-workshop-ws";
 import { useAgentUiCommands } from "./hooks/use-agent-ui-commands";
-
-const PAGES: Record<Page, React.ComponentType> = {
-  runs: RunsPage,
-  search: SearchPage,
-  saved: SavedPage,
-  settings: SettingsPage,
-};
+import { runPath } from "./utils/navigation";
 
 const DISCONNECTED_NOTICE_DELAY_MS = 100;
 
-function useActiveRunId(): string | null {
-  const [id, setId] = useState<string | null>(() => {
-    const h = window.location.hash.replace("#", "");
-    return h || null;
-  });
+/** Redirect legacy `/#<runId>` links to `/runs/<runId>`. */
+function LegacyHashRedirect() {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   useEffect(() => {
-    const onHash = () => {
-      const h = window.location.hash.replace("#", "");
-      setId(h || null);
-    };
-    window.addEventListener("hashchange", onHash);
-    // The app sets location.hash programmatically without firing hashchange in
-    // some code paths, so poll as a safety net.
-    const i = setInterval(onHash, 500);
-    return () => {
-      window.removeEventListener("hashchange", onHash);
-      clearInterval(i);
-    };
-  }, []);
-  return id;
+    const hash = location.hash.replace(/^#/, "");
+    if (!hash || hash.startsWith("wd-")) return;
+    navigate(runPath(hash), { replace: true });
+  }, [location.hash, navigate]);
+
+  return null;
 }
 
-export function App() {
-  const [page, setPage] = useState<Page>("runs");
+function AppLayout() {
   const [showDisconnectedNotice, setShowDisconnectedNotice] = useState(false);
-  const PageComponent = PAGES[page];
-  const activeRunId = useActiveRunId();
+  const runMatch = useMatch({ path: "/runs/:runId", end: false });
+  const activeRunId = runMatch?.params.runId
+    ? decodeURIComponent(runMatch.params.runId)
+    : null;
   const workshopConnected = useWorkshopConnected();
   useAgentUiCommands();
 
@@ -63,20 +58,10 @@ export function App() {
     sendWorkshopMessage({ type: "ui_view", run_id: activeRunId });
   }, [activeRunId]);
 
-  // Programmatic page navigation triggered by agent UI commands
-  // (see use-agent-ui-commands.ts).
-  useEffect(() => {
-    const onNavigate = (e: Event) => {
-      const next = (e as CustomEvent<{ page?: Page }>).detail?.page;
-      if (next && next in PAGES) setPage(next);
-    };
-    window.addEventListener("workshop:navigate", onNavigate);
-    return () => window.removeEventListener("workshop:navigate", onNavigate);
-  }, []);
-
   return (
     <SidebarProvider defaultOpen={false}>
-      <NavSidebar activePage={page} onNavigate={setPage} />
+      <LegacyHashRedirect />
+      <NavSidebar />
       <SidebarInset>
         <div className="relative h-screen overflow-hidden">
           <div
@@ -84,7 +69,7 @@ export function App() {
             aria-hidden={showDisconnectedNotice}
           >
             <div className="flex-1 min-w-0 overflow-auto">
-              <PageComponent />
+              <Outlet />
             </div>
             <MessagePane activeRunId={activeRunId} />
           </div>
@@ -106,3 +91,30 @@ export function App() {
     </SidebarProvider>
   );
 }
+
+export const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <AppLayout />,
+    children: [
+      { index: true, element: <Navigate to="/runs" replace /> },
+      { path: "runs", element: <RunsPage /> },
+      { path: "runs/:runId/span/:spanId", element: <RunsPage /> },
+      { path: "runs/:runId/spans", element: <RunsPage /> },
+      { path: "runs/:runId/convo", element: <RunsPage /> },
+      { path: "runs/:runId", element: <RunsPage /> },
+      { path: "search/:runId/span/:spanId", element: <SearchPage /> },
+      { path: "search/:runId/spans", element: <SearchPage /> },
+      { path: "search/:runId/convo", element: <SearchPage /> },
+      { path: "search/:runId", element: <SearchPage /> },
+      { path: "search", element: <SearchPage /> },
+      { path: "saved/:runId/span/:spanId", element: <SavedPage /> },
+      { path: "saved/:runId/spans", element: <SavedPage /> },
+      { path: "saved/:runId/convo", element: <SavedPage /> },
+      { path: "saved/:runId", element: <SavedPage /> },
+      { path: "saved", element: <SavedPage /> },
+      { path: "settings", element: <SettingsPage /> },
+      { path: "*", element: <Navigate to="/runs" replace /> },
+    ],
+  },
+]);

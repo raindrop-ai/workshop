@@ -784,7 +784,13 @@ async fn resolve_workshop_run_url(workshop_base: &str, started_after_ms: i64) ->
                     .iter()
                     .find(|r| r.started_at.unwrap_or(0) >= started_after_ms)
                 {
-                    return Some(format!("{}/#{}", workshop_base, hit.id));
+                    let mut run_url = reqwest::Url::parse(workshop_base).ok()?;
+                    {
+                        let mut path = run_url.path_segments_mut().ok()?;
+                        path.push("runs");
+                        path.push(&hit.id);
+                    }
+                    return Some(run_url.to_string());
                 }
             }
         }

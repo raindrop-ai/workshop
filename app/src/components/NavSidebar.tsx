@@ -11,26 +11,29 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Activity, Bookmark, Search, Settings } from "lucide-react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { RaindropLogo } from "./RaindropLogo";
 
 export type Page = "runs" | "search" | "saved" | "settings";
 
-const NAV_ITEMS: { id: Page; label: string; icon: typeof Activity }[] = [
-  { id: "runs", label: "runs", icon: Activity },
-  { id: "search", label: "search", icon: Search },
-  { id: "saved", label: "saved", icon: Bookmark },
+const NAV_ITEMS: { id: Page; label: string; path: string; icon: typeof Activity }[] = [
+  { id: "runs", label: "runs", path: "/runs", icon: Activity },
+  { id: "search", label: "search", path: "/search", icon: Search },
+  { id: "saved", label: "saved", path: "/saved", icon: Bookmark },
 ];
 
 const WORKSHOP_LOGO_URL = `${__RAINDROP_ASSETS_BASE_URL__}/assets/workshop/${encodeURIComponent(__RAINDROP_VERSION__)}/logo.svg`;
 
-interface NavSidebarProps {
-  activePage: Page;
-  onNavigate: (page: Page) => void;
+function isNavPathActive(pathname: string, path: string): boolean {
+  return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-function NavSidebarInner({ activePage, onNavigate }: NavSidebarProps) {
+function NavSidebarInner() {
   const { state } = useSidebar();
   const expanded = state === "expanded";
+  const location = useLocation();
+  const navigate = useNavigate();
+  const onSettings = location.pathname === "/settings";
 
   return (
     <Sidebar collapsible="icon">
@@ -76,23 +79,30 @@ function NavSidebarInner({ activePage, onNavigate }: NavSidebarProps) {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+              {NAV_ITEMS.map(({ id, label, path, icon: Icon }) => (
                 <SidebarMenuItem key={id}>
+                  {(() => {
+                    const active = isNavPathActive(location.pathname, path);
+                    return (
                   <SidebarMenuButton
                     tooltip={label}
-                    isActive={activePage === id}
-                    onClick={() => onNavigate(id)}
+                    asChild
+                    isActive={active}
                     size="sm"
                   >
-                    <Icon
-                      className={`size-3.5 shrink-0 transition-all duration-150 group-hover/menu-item:scale-105 ${activePage === id ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
-                    />
-                    <span
-                      className={`text-[11px] transition-opacity duration-150 ${activePage === id ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
-                    >
-                      {label}
-                    </span>
+                    <NavLink to={path} end={false}>
+                      <Icon
+                        className={`size-3.5 shrink-0 transition-all duration-150 group-hover/menu-item:scale-105 ${active ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
+                      />
+                      <span
+                        className={`text-[11px] transition-opacity duration-150 ${active ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
+                      >
+                        {label}
+                      </span>
+                    </NavLink>
                   </SidebarMenuButton>
+                    );
+                  })()}
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>
@@ -104,17 +114,15 @@ function NavSidebarInner({ activePage, onNavigate }: NavSidebarProps) {
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip="settings"
-              isActive={activePage === "settings"}
-              onClick={() =>
-                onNavigate(activePage === "settings" ? "runs" : "settings")
-              }
+              isActive={onSettings}
+              onClick={() => navigate(onSettings ? "/runs" : "/settings")}
               size="sm"
             >
               <Settings
-                className={`size-3.5 shrink-0 transition-all duration-150 group-hover/menu-item:scale-105 ${activePage === "settings" ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
+                className={`size-3.5 shrink-0 transition-all duration-150 group-hover/menu-item:scale-105 ${onSettings ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
               />
               <span
-                className={`text-[11px] transition-opacity duration-150 ${activePage === "settings" ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
+                className={`text-[11px] transition-opacity duration-150 ${onSettings ? "opacity-100" : "opacity-45 group-hover/menu-item:opacity-80"}`}
               >
                 settings
               </span>
@@ -126,6 +134,6 @@ function NavSidebarInner({ activePage, onNavigate }: NavSidebarProps) {
   );
 }
 
-export function NavSidebar(props: NavSidebarProps) {
-  return <NavSidebarInner {...props} />;
+export function NavSidebar() {
+  return <NavSidebarInner />;
 }

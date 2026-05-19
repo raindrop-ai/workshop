@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { runPath } from "../utils/navigation";
 import { RunListItem } from "../components/RunList";
 import { RunDetail } from "../components/RunDetail";
-import { ConvoDetail } from "../components/ConvoDetail";
 import { EmptyState } from "../components/EmptyState";
 import { ReplayView } from "../components/ReplayView";
 import { useReplay } from "../hooks/use-replay";
@@ -42,12 +43,10 @@ function isDefaultDemoRun(run: Run): boolean {
 }
 
 export function RunsPage() {
+  const navigate = useNavigate();
+  const { runId: routeRunId } = useParams<{ runId?: string }>();
+  const selectedId = routeRunId ? decodeURIComponent(routeRunId) : null;
   const [runs, setRuns] = useState<Run[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(() => {
-    const hash = window.location.hash.replace("#", "");
-    return hash || null;
-  });
-  const [selectedConvoId, setSelectedConvoId] = useState<string | null>(null);
   const [replayOriginalId, setReplayOriginalId] = useState<string | null>(null);
   const [replayCompare, setReplayCompare] = useState(false);
   const replay = useReplay();
@@ -93,11 +92,11 @@ export function RunsPage() {
   }, [firstTimeSetupDismissed, hasUserTraces]);
 
   useEffect(() => {
-    if (runs.length === 0 || selectedConvoId || replayOriginalId) return;
+    if (runs.length === 0 || replayOriginalId) return;
     if (selectedId && runs.some((run) => run.id === selectedId)) return;
     const firstUserTrace = runs.find((run) => !isDefaultDemoRun(run));
-    if (firstUserTrace) setSelectedId(firstUserTrace.id);
-  }, [replayOriginalId, runs, selectedConvoId, selectedId]);
+    if (firstUserTrace) navigate(runPath(firstUserTrace.id), { replace: true });
+  }, [navigate, replayOriginalId, runs, selectedId]);
 
   // Refresh active status display every 5s (tick counter avoids changing runs reference)
   const [, setTick] = useState(0);
@@ -124,34 +123,10 @@ export function RunsPage() {
   // When replay completes, select the replay run and scroll list to top
   useEffect(() => {
     if (replay.replayRunId && replayOriginalId) {
-      setSelectedId(replay.replayRunId);
+      navigate(runPath(replay.replayRunId), { replace: true });
       listRef.current?.scrollTo({ top: 0 });
     }
-  }, [replay.replayRunId, replayOriginalId]);
-
-  // Sync selectedId to URL hash
-  useEffect(() => {
-    if (selectedId) window.history.replaceState(null, "", `#${selectedId}`);
-    else window.history.replaceState(null, "", window.location.pathname + window.location.search);
-  }, [selectedId]);
-
-  useEffect(() => {
-    const selectFromHash = () => {
-      const hash = window.location.hash.replace("#", "");
-      setSelectedId(hash || null);
-    };
-    const onNavigateRun = (event: Event) => {
-      const runId = (event as CustomEvent<{ runId?: string }>).detail?.runId;
-      if (!runId) return;
-      setSelectedId(runId);
-    };
-    window.addEventListener("hashchange", selectFromHash);
-    window.addEventListener("workshop:navigate-run", onNavigateRun);
-    return () => {
-      window.removeEventListener("hashchange", selectFromHash);
-      window.removeEventListener("workshop:navigate-run", onNavigateRun);
-    };
-  }, []);
+  }, [navigate, replay.replayRunId, replayOriginalId]);
 
   // Unique agent types (event names) for the filter dropdown
   const agentTypes = useMemo(() => {
@@ -186,7 +161,7 @@ export function RunsPage() {
   const handleClear = async () => {
     if (!confirm("Clear all runs?")) return;
     await fetch("/api/clear", { method: "POST" });
-    setSelectedId(null);
+    navigate("/runs", { replace: true });
     setRuns([]);
   };
 
@@ -199,7 +174,6 @@ export function RunsPage() {
     const response = await fetch("/api/demo-traces/replay", { method: "POST" });
     if (!response.ok) throw new Error("Failed to load demo traces");
     const body = await response.json().catch(() => null) as { runIds?: string[] } | null;
-    setSelectedConvoId(null);
     if (replayOriginalId) { replay.reset(); setReplayOriginalId(null); }
     const fresh: Run[] = await (await fetch("/api/runs")).json();
     setRuns(fresh);
@@ -207,8 +181,8 @@ export function RunsPage() {
       body?.runIds?.find((id) => fresh.some((run) => run.id === id)) ??
       fresh.find(isDefaultDemoRun)?.id ??
       "demo_triage";
-    setSelectedId(firstDemoRunId);
-  }, [replay, replayOriginalId]);
+    navigate(runPath(firstDemoRunId));
+  }, [navigate, replay, replayOriginalId]);
 
   const handleFork = useCallback((sourceRunId: string, userMessage?: string, mode?: "local", model?: string, contextOverrides?: Record<string, any>) => {
     setReplayOriginalId(sourceRunId);
@@ -218,8 +192,8 @@ export function RunsPage() {
 
   const handleSelectRun = useCallback((id: string) => {
     if (replayOriginalId) { replay.reset(); setReplayOriginalId(null); }
-    setSelectedId(id);
-  }, [replay, replayOriginalId]);
+    navigate(runPath(id));
+  }, [navigate, replay, replayOriginalId]);
 
   useEffect(() => {
     const selected = selectedId
@@ -247,7 +221,6 @@ export function RunsPage() {
         : Math.max(currentIndex === -1 ? filtered.length - 1 : currentIndex - 1, 0);
       const nextRun = filtered[nextIndex];
       if (!nextRun || nextRun.id === selectedId) return;
-      setSelectedConvoId(null);
       handleSelectRun(nextRun.id);
     }
     document.addEventListener("keydown", onKey);
@@ -313,10 +286,10 @@ export function RunsPage() {
                 </div>
               : filtered.map(run => (
                   <RunListItem key={run.id} run={run}
-                    selected={run.id === selectedId && !selectedConvoId}
+                    selected={run.id === selectedId}
                     highlighted={run.id === hoveredSourceId}
                     faded={!!hoveredSourceId && run.id !== hoveredSourceId}
-                    onClick={() => { handleSelectRun(run.id); setSelectedConvoId(null); }}
+                    onClick={() => handleSelectRun(run.id)}
                   />
                 ))}
         </div>
@@ -339,9 +312,7 @@ export function RunsPage() {
                 onReplay={() => handleFork(replayOriginalId!)}
               />;
             })()
-          : selectedConvoId
-            ? <div className="h-full overflow-auto sb"><ConvoDetail key={selectedConvoId} convoId={selectedConvoId} onOpenTurn={(id) => { setSelectedId(id); setSelectedConvoId(null); }} /></div>
-            : selectedId
+          : selectedId
               ? (() => {
                   const selectedRun = runs.find(r => r.id === selectedId);
                   const meta = selectedRun ? parseReplayMetadata(selectedRun) : null;
@@ -361,7 +332,7 @@ export function RunsPage() {
                               <span className="text-[12px] truncate" style={{ color: C.fg1 }}>
                                 replay of{" "}
                                 <button className="font-medium hover:underline transition-colors" style={{ color: C.fg3 }}
-                                  onClick={() => { setReplayCompare(false); setSelectedId(meta.replay.sourceRunId); }}
+                                  onClick={() => { setReplayCompare(false); navigate(runPath(meta.replay.sourceRunId)); }}
                                   onMouseEnter={() => {
                                     const el = listRef.current?.querySelector(`[data-run-id="${meta.replay.sourceRunId}"]`);
                                     if (el) {
@@ -412,7 +383,7 @@ export function RunsPage() {
                       )}
                       <div className="flex-1 min-h-0 flex">
                         <div className="flex-1 min-w-0 overflow-auto sb">
-                          <RunDetail runId={selectedId} onForkStarted={handleFork} />
+                          <RunDetail runId={selectedId} routeBase="/runs" onForkStarted={handleFork} />
                         </div>
                         {replayCompare && meta && (
                           <>

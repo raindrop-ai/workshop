@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { C } from "../utils/colors";
 import { fmt, tryJson, detectProvider } from "../utils/helpers";
 import type { Span } from "../utils/types";
@@ -255,6 +255,9 @@ function SpanDetail({ span }: { span: Span }) {
 
 interface SpanTreeProps {
   spans: Span[];
+  /** When set with `onSelectSpan`, selection is driven by the URL. */
+  selectedSpanId?: string | null;
+  onSelectSpan?: (spanId: string | null) => void;
   annotations?: Annotation[];
   freshIds?: Set<string>;
   onClearFresh?: (id: string) => void;
@@ -271,8 +274,23 @@ interface ContextMenuState {
 const EMPTY_ANNOTATIONS: Annotation[] = [];
 const EMPTY_FRESH_IDS = new Set<string>();
 
-export function SpanTree({ spans, annotations = EMPTY_ANNOTATIONS, freshIds = EMPTY_FRESH_IDS, onClearFresh = () => {}, onCreateAnnotation, onDeleteAnnotation }: SpanTreeProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export function SpanTree({
+  spans,
+  selectedSpanId,
+  onSelectSpan,
+  annotations = EMPTY_ANNOTATIONS,
+  freshIds = EMPTY_FRESH_IDS,
+  onClearFresh = () => {},
+  onCreateAnnotation,
+  onDeleteAnnotation,
+}: SpanTreeProps) {
+  const controlled = onSelectSpan !== undefined;
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
+  const selectedId = controlled ? (selectedSpanId ?? null) : internalSelectedId;
+  const setSelectedId = useCallback((id: string | null) => {
+    if (controlled) onSelectSpan?.(id);
+    else setInternalSelectedId(id);
+  }, [controlled, onSelectSpan]);
   const autoSelectedRunRef = useRef<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [addingForSpan, setAddingForSpan] = useState<string | null>(null);
@@ -281,10 +299,10 @@ export function SpanTree({ spans, annotations = EMPTY_ANNOTATIONS, freshIds = EM
   const reportedSelectedId = selectedId && spans.some((s) => s.id === selectedId) ? selectedId : null;
 
   useEffect(() => {
-    if (!runId || autoSelectedRunRef.current === runId) return;
+    if (controlled || !runId || autoSelectedRunRef.current === runId) return;
     autoSelectedRunRef.current = runId;
-    setSelectedId(spans[0]?.id ?? null);
-  }, [runId, spans]);
+    setInternalSelectedId(spans[0]?.id ?? null);
+  }, [controlled, runId, spans]);
 
   useEffect(() => {
     if (!runId) return;
@@ -296,15 +314,14 @@ export function SpanTree({ spans, annotations = EMPTY_ANNOTATIONS, freshIds = EM
     return () => sendWorkshopMessage({ type: "ui_view", run_id: runId, span_id: null });
   }, [runId]);
 
-  // Deep-link receiver — another surface (message pane, trace strip, etc.)
-  // fires `workshop:deep-link-span` with a span id; we select it, scroll
-  // it into view, and briefly flash it.
+  // Deep-link receiver for uncontrolled trees (e.g. sub-agent drill-in).
   useEffect(() => {
+    if (controlled) return;
     const spanIds = new Set(spans.map((s) => s.id));
     const handler = (ev: Event) => {
       const spanId = (ev as CustomEvent).detail?.spanId as string | undefined;
       if (!spanId || !spanIds.has(spanId)) return;
-      setSelectedId(spanId);
+      setInternalSelectedId(spanId);
       setFlashId(spanId);
       requestAnimationFrame(() => {
         const el = document.querySelector<HTMLElement>(`[data-span-row="${spanId}"]`);
@@ -314,7 +331,18 @@ export function SpanTree({ spans, annotations = EMPTY_ANNOTATIONS, freshIds = EM
     };
     window.addEventListener("workshop:deep-link-span", handler);
     return () => window.removeEventListener("workshop:deep-link-span", handler);
-  }, [spans]);
+  }, [controlled, spans]);
+
+  useEffect(() => {
+    if (!selectedSpanId) return;
+    setFlashId(selectedSpanId);
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(`[data-span-row="${selectedSpanId}"]`);
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const timeout = window.setTimeout(() => setFlashId(null), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [selectedSpanId]);
 
   // Dismiss context menu on scroll / outside click / escape
   useEffect(() => {

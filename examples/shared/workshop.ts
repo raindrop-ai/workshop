@@ -49,7 +49,7 @@ export async function resolveWorkshopRunUrl({
     try {
       const rows = (await (await fetch(`${base}${endpoint}`)).json()) as WorkshopRow[];
       const hit = rows.find(match);
-      if (hit) return `${base}/#${hit.id}`;
+      if (hit) return `${base}/runs/${encodeURIComponent(hit.id)}`;
     } catch { /* keep polling */ }
     await new Promise((r) => setTimeout(r, intervalMs));
   }

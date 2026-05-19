@@ -1,4 +1,6 @@
 import { Fragment, type MouseEvent } from "react";
+import { router } from "../router";
+import { runPath } from "./navigation";
 
 /**
  * Parse inline `span_id: <id>` and `trace_<id>` tokens and return a
@@ -62,8 +64,7 @@ function DeepLink({ kind, id, label }: { kind: "span" | "run"; id: string; label
   function openDeepLink(event: MouseEvent<HTMLButtonElement>) {
     event.preventDefault();
     if (kind === "run") {
-      // Navigate to the run — the app uses hash-based routing for runs.
-      window.location.hash = id;
+      void router.navigate(runPath(id));
       return;
     }
     // Dispatch once so RunDetail swaps tabs if needed, then again after a

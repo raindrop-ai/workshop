@@ -52,6 +52,7 @@
     "express": "^4.21.0",
     "ink": "^7.0.2",
     "jsonpath-plus": "^10.4.0",
+    "protobufjs": "~7.5.3",
     "raindrop-ai": "^0.0.89",
     "react": "^19.2.6",
     "ws": "^8.16.0",

@@ -1,4 +1,6 @@
 import { useWorkshopEvent } from "./use-workshop-ws";
+import { router } from "../router";
+import { runPath } from "../utils/navigation";
 
 interface NavigateToRunCommand {
   type: "navigate_to_run";
@@ -44,13 +46,11 @@ export function useAgentUiCommands() {
 }
 
 function openRunsPage() {
-  window.dispatchEvent(new CustomEvent("workshop:navigate", { detail: { page: "runs" } }));
+  void router.navigate("/runs");
 }
 
 function openRun(runId: string) {
-  openRunsPage();
-  window.location.hash = runId;
-  window.dispatchEvent(new CustomEvent("workshop:navigate-run", { detail: { runId } }));
+  void router.navigate(runPath(runId));
 }
 
 function isAgentUiCommand(value: unknown): value is AgentUiCommand {

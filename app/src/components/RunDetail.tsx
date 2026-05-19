@@ -1,4 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  runPath,
+  runViewFromPathname,
+  traceConvoPath,
+  tracePath,
+  traceSpanPath,
+  traceSpansPath,
+  type TraceRouteBase,
+} from "../utils/navigation";
 import { animated, useSpring } from "@react-spring/web";
 import NumberFlow from "@number-flow/react";
 import { StickToBottom, useStickToBottomContext, type StickToBottomContext } from "use-stick-to-bottom";
@@ -296,7 +306,8 @@ function StatsLine({ stats, model, spans, active, startedAt }: {
   );
 }
 
-function MoreMenu({ runId }: { runId?: string }) {
+function MoreMenu({ runId, deleteRedirectPath = "/runs" }: { runId?: string; deleteRedirectPath?: string }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -311,8 +322,7 @@ function MoreMenu({ runId }: { runId?: string }) {
     if (!runId || !confirm("Delete this run and all its spans?")) return;
     await fetch(`/api/runs/${runId}`, { method: "DELETE" });
     setOpen(false);
-    window.location.hash = "";
-    window.location.reload();
+    navigate(deleteRedirectPath, { replace: true });
   };
 
   return (
@@ -434,7 +444,7 @@ function annotationToSavedPreview(annotation: Annotation): SavedAnnotationPrevie
 
 function ViewHeader({
   title, model, active, stats, allSpans, startedAt, anthropicModels,
-  run, source, isReplay, breadcrumb, fork, onAnnotateRun,
+  run, source, isReplay, breadcrumb, fork, onAnnotateRun, deleteRedirectPath,
 }: {
   title: string;
   model?: string | null;
@@ -452,6 +462,7 @@ function ViewHeader({
     userMessage?: string;
   };
   onAnnotateRun?: (input: { kind: AnnotationKind; note: string }) => Promise<Annotation | null>;
+  deleteRedirectPath?: string;
 }) {
   const onBack = breadcrumb?.onBack;
   const parentName = breadcrumb?.parentName;
@@ -562,7 +573,7 @@ function ViewHeader({
             <span style={{ color: C.fg0, opacity: 0.4 }}>|</span>
             <StatsLine stats={stats} model={model} spans={allSpans} active={active} startedAt={startedAt} />
           </div>
-          <MoreMenu runId={run?.id} />
+          <MoreMenu runId={run?.id} deleteRedirectPath={deleteRedirectPath} />
         </div>
       ) : (
         <>
@@ -768,7 +779,7 @@ function ViewHeader({
                   )}
                 </>;
                 })()}
-                <MoreMenu runId={run?.id} />
+                <MoreMenu runId={run?.id} deleteRedirectPath={deleteRedirectPath} />
               </div>
             )}
           </div>
@@ -973,7 +984,8 @@ function ScrollToBottomButton() {
   );
 }
 
-function TraceNotFound({ runId }: { runId: string }) {
+function TraceNotFound({ runId, backPath }: { runId: string; backPath: string }) {
+  const navigate = useNavigate();
   return (
     <div className="flex h-full items-center justify-center px-6">
       <div className="max-w-sm text-center">
@@ -990,10 +1002,7 @@ function TraceNotFound({ runId }: { runId: string }) {
         <button
           type="button"
           className="mt-4 rounded-md border border-white/10 bg-white/[0.06] px-3 py-1.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/[0.10] hover:text-white"
-          onClick={() => {
-            window.history.replaceState(null, "", window.location.pathname + window.location.search);
-            window.dispatchEvent(new HashChangeEvent("hashchange"));
-          }}
+          onClick={() => navigate(backPath, { replace: true })}
         >
           Back to traces
         </button>
@@ -1002,8 +1011,10 @@ function TraceNotFound({ runId }: { runId: string }) {
   );
 }
 
-export function RunDetail({ runId, initialData, isReplay, source, onForkStarted }: {
+export function RunDetail({ runId, routeBase, initialData, isReplay, source, onForkStarted }: {
   runId: string;
+  /** URL namespace that owns this detail view. Omit for embedded compare/replay panes. */
+  routeBase?: TraceRouteBase;
   initialData?: { run: Run; spans: Span[]; liveEvents?: LiveEvent[]; subAgents?: SubAgent[] };
   isReplay?: boolean;
   source?: "local" | "cloud";
@@ -1013,9 +1024,23 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
     initialData ? { run: initialData.run, spans: initialData.spans, liveEvents: initialData.liveEvents ?? [], subAgents: initialData.subAgents ?? [] } : null
   );
   const dataRef = useRef(data);
+  const navigate = useNavigate();
+  const { spanId: routeSpanId } = useParams<{ spanId?: string }>();
+  const { pathname } = useLocation();
+  const usesRouteState = routeBase !== undefined;
+  const runView = usesRouteState ? runViewFromPathname(pathname) : "overview";
+  const tab: "chat" | "tree" | "convo" =
+    usesRouteState
+      ? runView === "convo" ? "convo" : runView === "spans" || runView === "span" ? "tree" : "chat"
+      : "chat";
+  const routeSelectedSpanId = routeSpanId ? decodeURIComponent(routeSpanId) : null;
+  const [localTab, setLocalTab] = useState<"chat" | "tree" | "convo">("chat");
+  const [localSelectedSpanId, setLocalSelectedSpanId] = useState<string | null>(null);
+  const activeTab = usesRouteState ? tab : localTab;
+  const selectedSpanId = usesRouteState ? routeSelectedSpanId : localSelectedSpanId;
   const [loading, setLoading] = useState(!initialData);
   const [notFound, setNotFound] = useState(false);
-  const [tab, setTab] = useState<"chat" | "tree" | "convo">("chat");
+  const [agentTab, setAgentTab] = useState<"chat" | "tree">("chat");
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>(initialData?.liveEvents ?? []);
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const annotationsApi = useAnnotations(runId);
@@ -1054,13 +1079,47 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
     };
   }, []);
 
-  // When another surface fires a span deep-link, force-switch to Span Tree
-  // so the tree's listener can scroll + flash the target.
+  const goOverview = useCallback(() => {
+    if (routeBase) navigate(tracePath(routeBase, runId));
+    else setLocalTab("chat");
+  }, [navigate, routeBase, runId]);
+  const goSpans = useCallback(() => {
+    if (routeBase) navigate(traceSpansPath(routeBase, runId));
+    else setLocalTab("tree");
+  }, [navigate, routeBase, runId]);
+  const goConvo = useCallback(() => {
+    if (routeBase) navigate(traceConvoPath(routeBase, runId));
+    else setLocalTab("convo");
+  }, [navigate, routeBase, runId]);
+  const selectSpan = useCallback(
+    (spanId: string | null) => {
+      if (routeBase) {
+        if (spanId) navigate(traceSpanPath(routeBase, runId, spanId));
+        else navigate(traceSpansPath(routeBase, runId));
+        return;
+      }
+      setLocalTab("tree");
+      setLocalSelectedSpanId(spanId);
+    },
+    [navigate, routeBase, runId],
+  );
+
+  // When another surface fires a span deep-link, open it in the span tree route.
   useEffect(() => {
-    const handler = () => setTab("tree");
+    const handler = (ev: Event) => {
+      const spanId = (ev as CustomEvent).detail?.spanId as string | undefined;
+      if (!spanId) return;
+      const spans = dataRef.current?.spans;
+      if (!spans?.some((s) => s.id === spanId)) return;
+      if (routeBase) navigate(traceSpanPath(routeBase, runId, spanId));
+      else {
+        setLocalTab("tree");
+        setLocalSelectedSpanId(spanId);
+      }
+    };
     window.addEventListener("workshop:deep-link-span", handler);
     return () => window.removeEventListener("workshop:deep-link-span", handler);
-  }, []);
+  }, [navigate, routeBase, runId]);
   const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
   const [editModal, setEditModal] = useState<{ userMessage: string } | null>(null);
 
@@ -1090,8 +1149,20 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
     setLoading(true);
     setNotFound(false);
     setData(null);
-    setLiveEvents([]); setFocusedAgent(null); setTab("chat"); setEditModal(null); fetchData();
+    setLiveEvents([]); setFocusedAgent(null); setAgentTab("chat"); setLocalTab("chat"); setLocalSelectedSpanId(null); setEditModal(null); fetchData();
   }, [runId, fetchData, initialData]);
+
+  useEffect(() => {
+    if (!routeBase || !selectedSpanId || !data?.spans.length) return;
+    if (!data.spans.some((s) => s.id === selectedSpanId)) {
+      navigate(traceSpansPath(routeBase, runId), { replace: true });
+    }
+  }, [data?.spans, navigate, routeBase, runId, selectedSpanId]);
+
+  useEffect(() => {
+    if (!routeBase || runView !== "convo" || !data?.run) return;
+    if (!data.run.convo_id) navigate(tracePath(routeBase, runId), { replace: true });
+  }, [data?.run, navigate, routeBase, runId, runView]);
 
   useLayoutEffect(() => {
     stickToBottomContextRef.current?.stopScroll();
@@ -1184,7 +1255,7 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
   }, [annotationsApi.annotations, annotationsApi.freshIds, saveAnnotationPreview]);
 
   if (loading) return <div className="flex items-center justify-center h-full gap-2" style={{ color: C.fg1 }}>Loading <Dots /></div>;
-  if (notFound || !data?.run) return <TraceNotFound runId={runId} />;
+  if (notFound || !data?.run) return <TraceNotFound runId={runId} backPath={routeBase ?? "/runs"} />;
 
   const { run, spans, subAgents } = data;
   const replayMeta = parseReplayMetadata(run);
@@ -1203,8 +1274,8 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
     const tabStyle = (k: string) => ({
       padding: "8px 12px", fontSize: "12px", fontWeight: 500, cursor: "pointer" as const,
       background: "none", border: "none",
-      color: tab === k ? C.fg5 : C.fg0,
-      borderBottom: tab === k ? `2px solid ${C.fg4}` : "2px solid transparent",
+      color: agentTab === k ? C.fg5 : C.fg0,
+      borderBottom: agentTab === k ? `2px solid ${C.fg4}` : "2px solid transparent",
     });
 
     return (
@@ -1226,17 +1297,17 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
           }}
         />
         <div className="flex-shrink-0 flex" style={{ borderBottom: `1px solid ${C.border}`, paddingLeft: 16 }}>
-          <button style={tabStyle("chat")} onClick={() => setTab("chat")}>Overview</button>
-          <button style={tabStyle("tree")} onClick={() => setTab("tree")}>Span Tree</button>
+          <button style={tabStyle("chat")} onClick={() => setAgentTab("chat")}>Overview</button>
+          <button style={tabStyle("tree")} onClick={() => setAgentTab("tree")}>Span Tree</button>
         </div>
-        {tab === "tree" ? (
+        {agentTab === "tree" ? (
           <div className="flex-1 relative min-h-0 overflow-auto sb" style={{ padding: 16 }}>
             <SpanTree spans={agentSpans} />
           </div>
         ) : (
           <StickToBottom className="flex-1 relative min-h-0" resize="smooth" initial={false} contextRef={stickToBottomContextRef}>
             <StickToBottom.Content className="sb">
-              {tab === "chat" && <ChatFlow spans={agentSpans} liveEvents={[]} subAgents={[]} onDiveIn={setFocusedAgent} />}
+              {agentTab === "chat" && <ChatFlow spans={agentSpans} liveEvents={[]} subAgents={[]} onDiveIn={setFocusedAgent} />}
             </StickToBottom.Content>
             <ScrollToBottomButton />
           </StickToBottom>
@@ -1256,8 +1327,8 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
   const tabStyle = (k: string) => ({
     padding: "8px 12px", fontSize: "12px", fontWeight: 500, cursor: "pointer" as const,
     background: "none", border: "none",
-    color: tab === k ? C.fg5 : C.fg0,
-    borderBottom: tab === k ? `2px solid ${C.fg4}` : "2px solid transparent",
+    color: activeTab === k ? C.fg5 : C.fg0,
+    borderBottom: activeTab === k ? `2px solid ${C.fg4}` : "2px solid transparent",
   });
 
   return (
@@ -1278,6 +1349,7 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
         run={run}
         source={source}
         isReplay={isReplay}
+        deleteRedirectPath={routeBase ?? "/runs"}
         onAnnotateRun={(input) => createAnnotationAndSave({ ...input, source: "user" })}
         fork={onForkStarted ? {
           onFork: (msg, mode, mdl, ctx) => onForkStarted(runId, msg, mode, mdl, ctx),
@@ -1291,24 +1363,33 @@ export function RunDetail({ runId, initialData, isReplay, source, onForkStarted 
         onDelete={annotationsApi.remove}
       />
       <div className="flex-shrink-0 flex" style={{ borderBottom: `1px solid ${C.border}`, paddingLeft: 16 }}>
-        <button style={tabStyle("chat")} onClick={() => setTab("chat")}>Overview</button>
-        <button style={tabStyle("tree")} onClick={() => setTab("tree")}>Span Tree</button>
+        <button style={tabStyle("chat")} onClick={goOverview}>Overview</button>
+        <button style={tabStyle("tree")} onClick={goSpans}>Span Tree</button>
         {run.convo_id && (
-          <button style={tabStyle("convo")} onClick={() => setTab("convo")}>Convo</button>
+          <button style={tabStyle("convo")} onClick={goConvo}>Convo</button>
         )}
       </div>
-      {tab === "tree" ? (
+      {activeTab === "tree" ? (
         <div className="flex-1 relative min-h-0 overflow-auto sb" style={{ padding: 16 }}>
-          <SpanTree spans={spans} annotations={annotationsApi.annotations} freshIds={annotationsApi.freshIds} onClearFresh={annotationsApi.clearFresh} onCreateAnnotation={createAnnotationAndSave} onDeleteAnnotation={annotationsApi.remove} />
+          <SpanTree
+            spans={spans}
+            selectedSpanId={selectedSpanId}
+            onSelectSpan={selectSpan}
+            annotations={annotationsApi.annotations}
+            freshIds={annotationsApi.freshIds}
+            onClearFresh={annotationsApi.clearFresh}
+            onCreateAnnotation={createAnnotationAndSave}
+            onDeleteAnnotation={annotationsApi.remove}
+          />
         </div>
       ) : (
         <StickToBottom className="flex-1 relative min-h-0" resize="smooth" initial={false} contextRef={stickToBottomContextRef}>
           <StickToBottom.Content className="sb">
-            {tab === "chat" && <ChatFlow spans={spans} liveEvents={liveEvents} subAgents={subAgents} onDiveIn={setFocusedAgent} isActive={active} lastUpdatedAt={run.last_updated_at} onEditMessage={onForkStarted && !active ? (msg) => setEditModal({ userMessage: msg }) : undefined} replayError={replayMeta?.replay?.error ?? null} />}
-            {tab === "convo" && run.convo_id && (
+            {activeTab === "chat" && <ChatFlow spans={spans} liveEvents={liveEvents} subAgents={subAgents} onDiveIn={setFocusedAgent} isActive={active} lastUpdatedAt={run.last_updated_at} onEditMessage={onForkStarted && !active ? (msg) => setEditModal({ userMessage: msg }) : undefined} replayError={replayMeta?.replay?.error ?? null} />}
+            {activeTab === "convo" && run.convo_id && (
               source === "cloud"
                 ? <RemoteConvoLoader convoId={run.convo_id} highlightEventId={runId} />
-                : <ConvoDetail convoId={run.convo_id} />
+                : <ConvoDetail convoId={run.convo_id} onOpenTurn={(id) => navigate(runPath(id))} />
             )}
           </StickToBottom.Content>
           <ScrollToBottomButton />

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent 
 import claudeCodeLogo from "../assets/claude-code-logo.png";
 import codexLogo from "../assets/codex-logo.svg";
 import { useWorkshopEvent } from "../hooks/use-workshop-ws";
+import { router } from "../router";
+import { runPath } from "../utils/navigation";
 import { isAgentProvider, providerLabel, type AgentProviderId } from "../utils/agent-provider";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import { Markdown } from "./Markdown";
@@ -578,7 +580,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       return true;
     }
     if (cmd === "/trace" && rest[0]) {
-      window.location.hash = rest[0];
+      void router.navigate(runPath(rest[0]));
       return true;
     }
     const skillName = cmd.startsWith("/") ? cmd.slice(1) : "";
@@ -1912,7 +1914,7 @@ function formatSessionTime(value: string | null): string {
  * Turn bare `span_id: <id>` and `trace_<id>` tokens into markdown links
  * with a custom hash scheme. The click handler on the bubble intercepts
  * the resulting anchor clicks and routes them to either the span-scroll
- * event or a hash-based run navigation.
+ * event or a `/runs/:runId` navigation.
  */
 const DEEP_LINK_RE = /(span_id:\s*)([0-9a-f]{8,64})|(trace_)([0-9a-f]{8,64})/gi;
 function linkifyDeepRefs(text: string): string {
@@ -1939,6 +1941,6 @@ function handleDeepLinkClick(e: React.MouseEvent<HTMLDivElement>) {
   } else if (href.startsWith("#wd-run-")) {
     e.preventDefault();
     const runId = href.slice("#wd-run-".length);
-    window.location.hash = runId;
+    void router.navigate(runPath(runId));
   }
 }
