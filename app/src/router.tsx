@@ -11,6 +11,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { NavSidebar } from "./components/NavSidebar";
 import { MessagePane } from "./components/MessagePane";
 import { CaseContextPanel } from "./components/CaseContextPanel";
+import { ExperimentResultsPage } from "./pages/ExperimentResultsPage";
 import { RunsPage } from "./pages/RunsPage";
 import { SearchPage } from "./pages/SearchPage";
 import { SavedPage } from "./pages/SavedPage";
@@ -41,6 +42,8 @@ function AppLayout() {
   const activeRunId = runMatch?.params.runId
     ? decodeURIComponent(runMatch.params.runId)
     : null;
+  const location = useLocation();
+  const showCaseContext = location.pathname.startsWith("/runs");
   const workshopConnected = useWorkshopConnected();
   useAgentUiCommands();
 
@@ -74,9 +77,11 @@ function AppLayout() {
             </div>
             <MessagePane activeRunId={activeRunId} />
           </div>
-          <div className="absolute left-3 top-14 z-30 max-w-[calc(100vw-96px)]">
-            <CaseContextPanel selectedRunId={activeRunId} floating />
-          </div>
+          {showCaseContext && (
+            <div className="absolute left-3 top-14 z-30 max-w-[calc(100vw-96px)]">
+              <CaseContextPanel selectedRunId={activeRunId} floating />
+            </div>
+          )}
           {showDisconnectedNotice && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/35 px-6">
               <div
@@ -102,6 +107,7 @@ export const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { index: true, element: <Navigate to="/runs" replace /> },
+      { path: "experiments", element: <ExperimentResultsPage /> },
       { path: "runs", element: <RunsPage /> },
       { path: "runs/:runId/span/:spanId", element: <RunsPage /> },
       { path: "runs/:runId/spans", element: <RunsPage /> },

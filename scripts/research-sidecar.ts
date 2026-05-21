@@ -6,6 +6,8 @@ const AGENT_ENV_PATH =
   process.env.SPECTRUM_AGENT_ENV_PATH ??
   "/Users/dylan/Documents/synthropic-agent-ui/.worktrees/feature-detection-author-deep-agent/agent/.env";
 const LANGFUSE_PROJECT_ID = process.env.LANGFUSE_PROJECT_ID ?? "cmnrz34z7050iad07q94dn9ca";
+const LANGFUSE_ONPREM_PROJECT_ID = process.env.LANGFUSE_ONPREM_PROJECT_ID ?? "cmdyvso40000bvu07l4ffellc";
+const ONPREM_EXPERIMENT_DATASET = "detection_author_agent_elastic_proficio";
 
 type EnvMap = Record<string, string>;
 
@@ -14,6 +16,18 @@ const RESEARCH_TEAM = [
   { id: "rich", label: "Rich", query: "Rich" },
   { id: "dylan", label: "Dylan", query: "Dylan" },
 ];
+
+const scoreCache = new Map<string, { expiresAt: number; scores: any[] }>();
+
+async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += limit) {
+    const batch = items.slice(index, index + limit);
+    const next = await Promise.all(batch.map((item, batchIndex) => worker(item, index + batchIndex)));
+    results.push(...next);
+  }
+  return results;
+}
 
 function parseDotEnv(filePath: string): EnvMap {
   const env: EnvMap = {};
@@ -75,20 +89,27 @@ function environmentProfiles() {
 }
 
 function langfuseCreds(kind: string) {
-  const prod = kind === "prod";
+  const onprem = kind === "onprem";
+  const prod = kind === "prod" || kind === "cloud-prod";
   return {
     host: (
-      prod
+      onprem
+        ? env.PROD_LANGFUSE_HOST || env.LANGFUSE_PROD_HOST
+        : prod
         ? env.LANGFUSE_CLOUD_PROD_BASE_URL || env.LANGFUSE_CLOUD_PROD_HOST || env.PROD_LANGFUSE_HOST || env.LANGFUSE_PROD_HOST
         : env.LANGFUSE_CLOUD_BASE_URL || env.LANGFUSE_HOST
     ) || env.LANGFUSE_HOST || "",
     publicKey: (
-      prod
+      onprem
+        ? env.PROD_LANGFUSE_PUBLIC_KEY || env.LANGFUSE_PROD_PUBLIC_KEY
+        : prod
         ? env.LANGFUSE_CLOUD_PROD_PUBLIC_KEY || env.PROD_LANGFUSE_PUBLIC_KEY || env.LANGFUSE_PROD_PUBLIC_KEY
         : env.LANGFUSE_CLOUD_PUBLIC_KEY || env.LANGFUSE_PUBLIC_KEY
     ) || env.LANGFUSE_PUBLIC_KEY || "",
     secretKey: (
-      prod
+      onprem
+        ? env.PROD_LANGFUSE_SECRET_KEY || env.LANGFUSE_PROD_SECRET_KEY
+        : prod
         ? env.LANGFUSE_CLOUD_PROD_SECRET_KEY || env.PROD_LANGFUSE_SECRET_KEY || env.LANGFUSE_PROD_SECRET_KEY
         : env.LANGFUSE_CLOUD_SECRET_KEY || env.LANGFUSE_SECRET_KEY
     ) || env.LANGFUSE_SECRET_KEY || "",
@@ -219,6 +240,136 @@ function normalizeDataset(dataset: any) {
   };
 }
 
+async function fetchAllScores(kind: string) {
+  const cached = scoreCache.get(kind);
+  if (cached && cached.expiresAt > Date.now()) return cached.scores;
+
+  const maxPages = kind === "onprem" ? 300 : 10;
+  const firstPage = await langfuseGet(kind, "scores?page=1&limit=100");
+  const totalPages = Math.min(firstPage.meta?.totalPages ?? 1, maxPages);
+  const pages = Array.from({ length: Math.max(0, totalPages - 1) }, (_, index) => index + 2);
+  const rest = await mapLimit(pages, 12, (page) => langfuseGet(kind, `scores?page=${page}&limit=100`));
+  const scores = [
+    ...(firstPage.data ?? []),
+    ...rest.flatMap((page) => page.data ?? []),
+  ];
+  const numericScores = scores.filter((score) => score.dataType === "NUMERIC" && Number.isFinite(Number(score.value)));
+  scoreCache.set(kind, { expiresAt: Date.now() + 5 * 60 * 1000, scores: numericScores });
+  return numericScores;
+}
+
+function displayAgentName(datasetName: string) {
+  const root = datasetName.split("/")[0] || datasetName;
+  return root.replace(/_/g, "-");
+}
+
+function summarizeRunScores(run: any, dataset: any, allScores: any[]) {
+  const runItems = run.datasetRunItems ?? [];
+  const traceIds = new Set(runItems.map((item: any) => item.traceId).filter(Boolean));
+  const matched = allScores.filter((score) => traceIds.has(score.traceId) || traceIds.has(score.metadata?.target_trace_id));
+  const byName = new Map<string, any[]>();
+  for (const score of matched) {
+    const bucket = byName.get(score.name) ?? [];
+    bucket.push(score);
+    byName.set(score.name, bucket);
+  }
+  const [scoreName, scores] = [...byName.entries()]
+    .sort(([, a], [, b]) => new Set(b.map((score) => score.traceId)).size - new Set(a.map((score) => score.traceId)).size)[0] ?? ["", []];
+
+  const latestByTrace = new Map<string, any>();
+  for (const score of scores) {
+    const previous = latestByTrace.get(score.traceId);
+    if (!previous || String(score.updatedAt ?? score.timestamp ?? "") > String(previous.updatedAt ?? previous.timestamp ?? "")) {
+      latestByTrace.set(score.traceId, score);
+    }
+  }
+
+  const values = [...latestByTrace.values()];
+  const total = runItems.length || dataset.itemCount || 0;
+  const numericValues = values.map((score) => Number(score.value));
+  const average = numericValues.length ? numericValues.reduce((sum, value) => sum + value, 0) / numericValues.length : null;
+  const passing = values.filter((score) => Number(score.value) > 0).length;
+  const failing = values.filter((score) => Number(score.value) <= 0).length;
+  const scored = values.length;
+
+  return {
+    scoreName,
+    total,
+    scored,
+    passing,
+    failing,
+    review: Math.max(0, total - scored),
+    score: average === null ? null : Math.round(average <= 1 ? average * 100 : average),
+  };
+}
+
+async function experimentResults(url: URL) {
+  const kind = url.searchParams.get("lfEnv") || "prod";
+  const datasetsResponse = await langfuseGet(kind, "datasets?page=1&limit=100");
+  let datasets = (datasetsResponse.data ?? []).map(normalizeDataset);
+  if (kind === "onprem") {
+    datasets = datasets.filter((dataset: any) => dataset.name === ONPREM_EXPERIMENT_DATASET || dataset.id === "cmlrbd6t10009x907vuqz1owu");
+  }
+  const allScores = await fetchAllScores(kind);
+  const results = [];
+  const series = [];
+
+  for (const dataset of datasets) {
+    if (!dataset.name || dataset.itemCount === 0) continue;
+    const detail = normalizeDataset(await langfuseGet(kind, `datasets/${encodeURIComponent(dataset.name)}`));
+    const runLimit = kind === "onprem" ? detail.runs.length : 12;
+    const runNames = detail.runs.slice(0, runLimit);
+    const runs = [];
+    const runData = await mapLimit(runNames, kind === "onprem" ? 10 : 4, (runName) =>
+      langfuseGet(kind, `datasets/${encodeURIComponent(dataset.name)}/runs/${encodeURIComponent(runName)}`)
+        .then((run) => ({ runName, run }))
+    );
+    for (const { runName, run } of runData) {
+      const summary = summarizeRunScores(run, detail, allScores);
+      const createdAt = run.createdAt ?? run.updatedAt ?? detail.updatedAt;
+      const point = {
+        datasetId: detail.id,
+        datasetName: detail.name,
+        agent: displayAgentName(detail.name),
+        runName,
+        createdAt,
+        score: summary.score,
+        scoreName: summary.scoreName,
+        total: summary.total,
+        scored: summary.scored,
+      };
+      runs.push(point);
+      if (point.score !== null) series.push(point);
+    }
+    runs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const latestRun = runs.find((run) => run.score !== null) ?? runs[0] ?? null;
+    results.push({
+      id: detail.id,
+      name: detail.name,
+      agent: displayAgentName(detail.name),
+      itemCount: detail.itemCount,
+      latestRun,
+      runs,
+      updatedAt: detail.updatedAt,
+    });
+  }
+
+  results.sort((a, b) => {
+    const scoreA = a.latestRun?.score ?? -1;
+    const scoreB = b.latestRun?.score ?? -1;
+    return scoreA - scoreB || String(a.name).localeCompare(String(b.name));
+  });
+  series.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+
+  return {
+    datasets: results,
+    series,
+    source: kind,
+    langfuseUrl: `${langfuseCreds(kind).host.replace(/\/+$/, "")}/project/${kind === "onprem" ? LANGFUSE_ONPREM_PROJECT_ID : LANGFUSE_PROJECT_ID}/datasets${kind === "onprem" ? "/cmlrbd6t10009x907vuqz1owu" : "?pageIndex=0&pageSize=50"}`,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 async function listDatasets(url: URL) {
   const kind = url.searchParams.get("lfEnv") || "exp";
   const agent = (url.searchParams.get("agent") || "").toLowerCase();
@@ -328,6 +479,7 @@ async function datasetStats(url: URL) {
 
 Bun.serve({
   port: PORT,
+  idleTimeout: 120,
   async fetch(request) {
     if (request.method === "OPTIONS") return json({});
     const url = new URL(request.url);
@@ -337,6 +489,7 @@ Bun.serve({
       if (url.pathname === "/research-api/jira/assigned") return json(await assignedJiraIssues(url));
       if (url.pathname === "/research-api/langfuse/datasets") return json(await listDatasets(url));
       if (url.pathname === "/research-api/langfuse/dataset-stats") return datasetStats(url);
+      if (url.pathname === "/research-api/langfuse/experiment-results") return json(await experimentResults(url));
       return json({ error: "Not found" }, 404);
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, 500);

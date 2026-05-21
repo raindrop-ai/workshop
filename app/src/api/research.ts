@@ -40,6 +40,36 @@ export interface LangfuseDatasetStats {
   langfuseUrl: string;
 }
 
+export interface ExperimentRunPoint {
+  datasetId: string;
+  datasetName: string;
+  agent: string;
+  runName: string;
+  createdAt: string;
+  score: number | null;
+  scoreName: string;
+  total: number;
+  scored: number;
+}
+
+export interface ExperimentDatasetResult {
+  id: string;
+  name: string;
+  agent: string;
+  itemCount: number;
+  latestRun: ExperimentRunPoint | null;
+  runs: ExperimentRunPoint[];
+  updatedAt: string | null;
+}
+
+export interface ExperimentResultsResponse {
+  datasets: ExperimentDatasetResult[];
+  series: ExperimentRunPoint[];
+  source: string;
+  langfuseUrl: string;
+  generatedAt: string;
+}
+
 export interface JiraUserSummary {
   id: string;
   displayName: string;
@@ -76,7 +106,9 @@ export async function listAssignedJiraIssues(input: { userId?: string } = {}): P
   return apiJson<{ users: JiraTeamUser[]; user: JiraUserSummary; issues: JiraIssueSummary[] }>(`/research-api/jira/assigned${qs ? `?${qs}` : ""}`);
 }
 
-export async function listLangfuseDatasets(input: { agent?: string; environment?: string; lfEnv?: "exp" | "prod" }) {
+export type LangfuseSource = "exp" | "prod" | "cloud-prod" | "onprem";
+
+export async function listLangfuseDatasets(input: { agent?: string; environment?: string; lfEnv?: LangfuseSource }) {
   const params = new URLSearchParams();
   if (input.agent) params.set("agent", input.agent);
   if (input.environment) params.set("environment", input.environment);
@@ -88,11 +120,18 @@ export async function getLangfuseDatasetStats(input: {
   name: string;
   runName?: string;
   scoreName?: string;
-  lfEnv?: "exp" | "prod";
+  lfEnv?: LangfuseSource;
 }): Promise<LangfuseDatasetStats> {
   const params = new URLSearchParams({ name: input.name });
   if (input.runName) params.set("runName", input.runName);
   if (input.scoreName) params.set("scoreName", input.scoreName);
   if (input.lfEnv) params.set("lfEnv", input.lfEnv);
   return apiJson<LangfuseDatasetStats>(`/research-api/langfuse/dataset-stats?${params}`);
+}
+
+export async function getExperimentResults(input: { lfEnv?: LangfuseSource } = {}): Promise<ExperimentResultsResponse> {
+  const params = new URLSearchParams();
+  if (input.lfEnv) params.set("lfEnv", input.lfEnv);
+  const qs = params.toString();
+  return apiJson<ExperimentResultsResponse>(`/research-api/langfuse/experiment-results${qs ? `?${qs}` : ""}`);
 }
