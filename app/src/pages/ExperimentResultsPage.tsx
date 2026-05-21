@@ -143,6 +143,61 @@ function TrendChart({ points }: { points: ExperimentRunPoint[] }) {
   );
 }
 
+function ExperimentRunsTable({ points }: { points: ExperimentRunPoint[] }) {
+  const rows = [...points].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return (
+    <div className="overflow-hidden rounded-lg border" style={{ background: "rgba(255,255,255,0.02)", borderColor: C.border }}>
+      <div
+        className="grid px-3 py-2 text-[10px] font-mono uppercase tracking-wide"
+        style={{
+          gridTemplateColumns: "minmax(260px,2fr) 72px minmax(160px,1fr) 128px 74px",
+          columnGap: 12,
+          color: C.fg0,
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <div>Experiment</div>
+        <div>Score</div>
+        <div>Agent</div>
+        <div>Timestamp</div>
+        <div>Scored</div>
+      </div>
+      <div className="max-h-[360px] overflow-auto sb">
+        {rows.length === 0 ? (
+          <div className="px-3 py-8 text-center text-sm" style={{ color: C.fg0 }}>No experiments match this search.</div>
+        ) : rows.map((point) => {
+          const color = scoreColor(point.score);
+          return (
+            <div
+              key={`${point.datasetName}-${point.runName}`}
+              className="grid items-center px-3 py-2 text-[11px]"
+              style={{
+                gridTemplateColumns: "minmax(260px,2fr) 72px minmax(160px,1fr) 128px 74px",
+                columnGap: 12,
+                borderBottom: "1px solid rgba(255,255,255,0.04)",
+              }}
+            >
+              <div className="min-w-0">
+                <div className="truncate font-mono" style={{ color: C.fg3 }}>{point.runName}</div>
+                <div className="mt-0.5 truncate text-[10px] font-mono" style={{ color: C.fg0 }}>{point.datasetName}</div>
+              </div>
+              <div
+                className="inline-flex h-7 w-[58px] items-center justify-center rounded border text-[12px] font-semibold"
+                style={{ color, background: `${color}16`, borderColor: `${color}55` }}
+              >
+                {scoreLabel(point.score)}
+              </div>
+              <div className="truncate font-mono" style={{ color: C.fg1 }}>{point.agent}</div>
+              <div className="font-mono" style={{ color: C.fg1 }}>{formatTime(point.createdAt)}</div>
+              <div className="font-mono" style={{ color: C.fg1 }}>{point.scored}/{point.total}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function ExperimentResultsPage() {
   const [source, setSource] = useState<LangfuseSource>("prod");
   const [query, setQuery] = useState("");
@@ -247,17 +302,6 @@ export function ExperimentResultsPage() {
         </div>
       </div>
 
-      <div className="mb-4 flex max-w-[520px] items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-2">
-        <Search className="size-3.5" style={{ color: C.fg0 }} />
-        <input
-          className="h-8 flex-1 bg-transparent text-[12px] outline-none"
-          style={{ color: C.fg3 }}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search experiments, models, agents..."
-        />
-      </div>
-
       {error && (
         <div className="mb-4 rounded-lg border px-3 py-2 text-[12px]" style={{ borderColor: "rgba(235,20,20,0.35)", color: C.red }}>
           {error}
@@ -266,6 +310,26 @@ export function ExperimentResultsPage() {
 
       <div className="mb-5">
         <TrendChart points={filteredSeries} />
+      </div>
+
+      <div className="mb-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-[13px] font-medium" style={{ color: C.fg3 }}>Experiment Runs</h2>
+            <div className="mt-0.5 text-[10px] font-mono" style={{ color: C.fg0 }}>{filteredSeries.length} scored runs</div>
+          </div>
+          <div className="flex w-[520px] max-w-full items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-2">
+            <Search className="size-3.5" style={{ color: C.fg0 }} />
+            <input
+              className="h-8 flex-1 bg-transparent text-[12px] outline-none"
+              style={{ color: C.fg3 }}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search experiment names, models, agents..."
+            />
+          </div>
+        </div>
+        <ExperimentRunsTable points={filteredSeries} />
       </div>
 
       <div className="mb-2 flex items-center justify-between">
