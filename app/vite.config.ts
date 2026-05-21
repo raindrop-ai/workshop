@@ -10,6 +10,7 @@ const backendPort = Number(
     "5899",
 );
 const backendUrl = `http://localhost:${backendPort}`;
+const researchApiUrl = `http://localhost:${process.env.RESEARCH_SIDECAR_PORT ?? "5902"}`;
 const rootPackage = JSON.parse(
   readFileSync(path.resolve(__dirname, "../package.json"), "utf8"),
 ) as { version?: string };
@@ -37,6 +38,7 @@ export default defineConfig({
       "/api": backendUrl,
       "/v1": backendUrl,
       "/ws": { target: backendUrl.replace(/^http/, "ws"), ws: true },
+      "/research-api": researchApiUrl,
     },
   },
 });

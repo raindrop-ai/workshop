@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { runPath } from "../utils/navigation";
-import { RunListItem } from "../components/RunList";
+import { RunTableRow } from "../components/RunList";
 import { RunDetail } from "../components/RunDetail";
 import { EmptyState } from "../components/EmptyState";
 import { ReplayView } from "../components/ReplayView";
@@ -228,23 +228,127 @@ export function RunsPage() {
   }, [filtered, handleSelectRun, selectedId]);
 
   return (
-    <div className="h-full flex">
-      {/* Run list sidebar */}
-      <div className="w-[248px] flex-shrink-0 flex flex-col" style={{ borderRight: "1px solid rgba(255,255,255,0.06)" }}>
-        <div className="p-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-1.5">
-              {/* WebSocket connection indicator */}
-              <div className="w-1.5 h-1.5 rounded-full" title={wsConnected ? "Connected" : "Disconnected"}
-                style={{ background: wsConnected ? C.green : C.red, opacity: wsConnected ? 0.6 : 1 }} />
-              <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>{wsConnected ? "connected" : "disconnected"}</span>
-            </div>
-            <button className="text-[10px] transition hover:text-red-400" style={{ color: "#5a6a72" }} onClick={handleClear}>
-              clear
-            </button>
+    <div className="h-full flex flex-col">
+      {/* Trace workspace */}
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-hidden">
+          {(replay.state !== "idle" || replay.replayRunId) && replayOriginalId
+            ? (() => {
+                const origRun = runs.find(r => r.id === replayOriginalId);
+                const origName = (origRun?.event_name ?? origRun?.name ?? "")?.replace(/^replay:/i, "").trim() || replayOriginalId!.slice(0, 12);
+                return <ReplayView
+                  originalRunId={replayOriginalId}
+                  originalName={origName}
+                  replayRunId={replay.replayRunId}
+                  error={replay.error}
+                  isRunning={replay.state === "running"}
+                  isCancelled={replay.state === "cancelled"}
+                  onCancel={() => replay.cancel()}
+                  onReplay={() => handleFork(replayOriginalId!)}
+                />;
+              })()
+            : selectedId
+                ? (() => {
+                    const selectedRun = runs.find(r => r.id === selectedId);
+                    const meta = selectedRun ? parseReplayMetadata(selectedRun) : null;
+                    const srcRun = meta ? runs.find(r => r.id === meta.replay.sourceRunId) : null;
+                    const srcName = meta ? (srcRun?.event_name ?? srcRun?.name ?? meta.replay.sourceRunId.slice(0, 12)).replace(/^replay:/, "") : "";
+                    return (
+                      <div className="h-full flex flex-col">
+                        {meta && (
+                          <div className="flex-shrink-0 flex z-10" style={{ borderBottom: `1px solid ${C.border}` }}>
+                            {/* Replay (left) header */}
+                            <div
+                              className="flex items-center justify-between px-3 py-1.5 min-w-0"
+                              style={{ background: "rgba(255,255,255,0.10)", width: replayCompare ? "50%" : "100%" }}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <RotateCcw style={{ width: 12, height: 12, color: C.fg1, flexShrink: 0 }} />
+                                <span className="text-[12px] truncate" style={{ color: C.fg1 }}>
+                                  replay of{" "}
+                                  <button className="font-medium hover:underline transition-colors" style={{ color: C.fg3 }}
+                                    onClick={() => { setReplayCompare(false); navigate(runPath(meta.replay.sourceRunId)); }}
+                                    onMouseEnter={() => {
+                                      const el = listRef.current?.querySelector(`[data-run-id="${meta.replay.sourceRunId}"]`);
+                                      if (el) {
+                                        const listRect = listRef.current!.getBoundingClientRect();
+                                        const elRect = el.getBoundingClientRect();
+                                        if (elRect.bottom > listRect.top && elRect.top < listRect.bottom) {
+                                          setHoveredSourceId(meta.replay.sourceRunId);
+                                        }
+                                      }
+                                    }}
+                                    onMouseLeave={() => setHoveredSourceId(null)}>
+                                    {srcName}
+                                  </button>
+                                  <span className="font-mono text-[10px] ml-1.5" style={{ color: C.fg0 }}>({meta.replay.sourceRunId.slice(0, 5)})</span>
+                                </span>
+                                {!replayCompare && (
+                                  <button
+                                    className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded transition-colors hover:bg-white/10 flex-shrink-0"
+                                    style={{ color: C.fg2, border: `1px solid rgba(255,255,255,0.15)` }}
+                                    onClick={() => setReplayCompare(true)}>
+                                    compare <ArrowRight className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Original (right) header — same row, mirrors the divider below */}
+                            {replayCompare && (
+                              <>
+                                <div className="flex-shrink-0 w-[1px]" style={{ background: C.border }} />
+                                <div
+                                  className="flex items-center justify-between px-3 py-1.5 min-w-0"
+                                  style={{ background: "rgba(255,255,255,0.04)", flex: 1 }}
+                                >
+                                  <span className="text-[12px] truncate" style={{ color: C.fg1 }}>
+                                    original — <span style={{ color: C.fg3 }}>{srcName}</span>
+                                  </span>
+                                  <button
+                                    className="p-0.5 rounded transition-colors hover:bg-white/10 flex-shrink-0"
+                                    onClick={() => setReplayCompare(false)}
+                                  >
+                                    <X className="h-3.5 w-3.5" style={{ color: C.fg1 }} />
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                        <div className="flex-1 min-h-0 flex">
+                          <div className="flex-1 min-w-0 overflow-auto sb">
+                            <RunDetail runId={selectedId} routeBase="/runs" onForkStarted={handleFork} />
+                          </div>
+                          {replayCompare && meta && (
+                            <>
+                              <div className="flex-shrink-0 w-[1px]" style={{ background: C.border }} />
+                              <div className="flex-1 min-w-0 overflow-auto sb">
+                                <RunDetail key={meta.replay.sourceRunId} runId={meta.replay.sourceRunId} />
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()
+                : <EmptyState
+                    firstTime={!hasUserTraces && !firstTimeSetupDismissed}
+                    onFirstTimeDone={dismissFirstTimeSetup}
+                    onSeeDemoTraces={openDemoTrace}
+                  />
+          }
+        </div>
+
+      {/* Run grid */}
+      <div className="h-[282px] flex-shrink-0 flex flex-col" style={{ borderTop: "1px solid rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.72)" }}>
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          <div className="flex items-center gap-1.5 mr-2">
+            <div className="w-1.5 h-1.5 rounded-full" title={wsConnected ? "Connected" : "Disconnected"}
+              style={{ background: wsConnected ? C.green : C.red, opacity: wsConnected ? 0.6 : 1 }} />
+            <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>{wsConnected ? "connected" : "disconnected"}</span>
           </div>
-          {/* Search */}
-          <div className="relative mb-2">
+
+          <div className="relative w-[260px] max-w-full">
             <input
               ref={searchRef}
               className="w-full px-2 py-1.5 rounded text-[11px] font-mono outline-none"
@@ -260,9 +364,9 @@ export function RunsPage() {
               </button>
             )}
           </div>
-          {/* Agent type filter */}
+
           {agentTypes.length > 1 && (
-            <div className="relative mb-2">
+            <div className="relative w-[240px] max-w-full">
               <select
                 className="w-full appearance-none px-2 py-1.5 pr-6 rounded text-[11px] font-mono outline-none cursor-pointer"
                 style={{ background: "rgba(255,255,255,0.04)", color: agentFilter === "all" ? C.fg1 : C.fg3, border: `1px solid ${agentFilter !== "all" ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)"}` }}
@@ -277,132 +381,47 @@ export function RunsPage() {
               <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none" style={{ color: C.fg0 }} />
             </div>
           )}
+
+          <div className="ml-auto flex items-center gap-3">
+            <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>
+              {filtered.length} of {runs.length} runs
+            </span>
+            <button className="text-[10px] transition hover:text-red-400" style={{ color: "#5a6a72" }} onClick={handleClear}>
+              clear
+            </button>
+          </div>
         </div>
 
-        <div ref={listRef} className="flex-1 overflow-auto p-2 space-y-0.5 sb">
+        <div
+          className="grid flex-shrink-0 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wide"
+          style={{
+            gridTemplateColumns: "74px minmax(150px, 1.6fr) 76px minmax(86px, 1fr) 74px",
+            columnGap: 8,
+            color: C.fg0,
+            borderBottom: "1px solid rgba(255,255,255,0.05)",
+          }}
+        >
+          <div>Status</div>
+          <div>Agent</div>
+          <div>Trace</div>
+          <div>Model</div>
+          <div>Updated</div>
+        </div>
+
+        <div ref={listRef} className="flex-1 min-h-0 overflow-auto sb">
           {filtered.length === 0
-              ? <div className="text-center text-xs mt-8" style={{ color: "#5a6a72" }}>
-                  {search ? "No matching runs" : "No runs"}
-                </div>
-              : filtered.map(run => (
-                  <RunListItem key={run.id} run={run}
-                    selected={run.id === selectedId}
-                    highlighted={run.id === hoveredSourceId}
-                    faded={!!hoveredSourceId && run.id !== hoveredSourceId}
-                    onClick={() => handleSelectRun(run.id)}
-                  />
-                ))}
-        </div>
-      </div>
-
-      {/* Main */}
-      <div className="flex-1 min-w-0 relative overflow-hidden">
-        {(replay.state !== "idle" || replay.replayRunId) && replayOriginalId
-          ? (() => {
-              const origRun = runs.find(r => r.id === replayOriginalId);
-              const origName = (origRun?.event_name ?? origRun?.name ?? "")?.replace(/^replay:/i, "").trim() || replayOriginalId!.slice(0, 12);
-              return <ReplayView
-                originalRunId={replayOriginalId}
-                originalName={origName}
-                replayRunId={replay.replayRunId}
-                error={replay.error}
-                isRunning={replay.state === "running"}
-                isCancelled={replay.state === "cancelled"}
-                onCancel={() => replay.cancel()}
-                onReplay={() => handleFork(replayOriginalId!)}
-              />;
-            })()
-          : selectedId
-              ? (() => {
-                  const selectedRun = runs.find(r => r.id === selectedId);
-                  const meta = selectedRun ? parseReplayMetadata(selectedRun) : null;
-                  const srcRun = meta ? runs.find(r => r.id === meta.replay.sourceRunId) : null;
-                  const srcName = meta ? (srcRun?.event_name ?? srcRun?.name ?? meta.replay.sourceRunId.slice(0, 12)).replace(/^replay:/, "") : "";
-                  return (
-                    <div className="h-full flex flex-col">
-                      {meta && (
-                        <div className="flex-shrink-0 flex z-10" style={{ borderBottom: `1px solid ${C.border}` }}>
-                          {/* Replay (left) header */}
-                          <div
-                            className="flex items-center justify-between px-3 py-1.5 min-w-0"
-                            style={{ background: "rgba(255,255,255,0.10)", width: replayCompare ? "50%" : "100%" }}
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <RotateCcw style={{ width: 12, height: 12, color: C.fg1, flexShrink: 0 }} />
-                              <span className="text-[12px] truncate" style={{ color: C.fg1 }}>
-                                replay of{" "}
-                                <button className="font-medium hover:underline transition-colors" style={{ color: C.fg3 }}
-                                  onClick={() => { setReplayCompare(false); navigate(runPath(meta.replay.sourceRunId)); }}
-                                  onMouseEnter={() => {
-                                    const el = listRef.current?.querySelector(`[data-run-id="${meta.replay.sourceRunId}"]`);
-                                    if (el) {
-                                      const listRect = listRef.current!.getBoundingClientRect();
-                                      const elRect = el.getBoundingClientRect();
-                                      if (elRect.bottom > listRect.top && elRect.top < listRect.bottom) {
-                                        setHoveredSourceId(meta.replay.sourceRunId);
-                                      }
-                                    }
-                                  }}
-                                  onMouseLeave={() => setHoveredSourceId(null)}>
-                                  {srcName}
-                                </button>
-                                <span className="font-mono text-[10px] ml-1.5" style={{ color: C.fg0 }}>({meta.replay.sourceRunId.slice(0, 5)})</span>
-                              </span>
-                              {!replayCompare && (
-                                <button
-                                  className="flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded transition-colors hover:bg-white/10 flex-shrink-0"
-                                  style={{ color: C.fg2, border: `1px solid rgba(255,255,255,0.15)` }}
-                                  onClick={() => setReplayCompare(true)}>
-                                  compare <ArrowRight className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Original (right) header — same row, mirrors the divider below */}
-                          {replayCompare && (
-                            <>
-                              <div className="flex-shrink-0 w-[1px]" style={{ background: C.border }} />
-                              <div
-                                className="flex items-center justify-between px-3 py-1.5 min-w-0"
-                                style={{ background: "rgba(255,255,255,0.04)", flex: 1 }}
-                              >
-                                <span className="text-[12px] truncate" style={{ color: C.fg1 }}>
-                                  original — <span style={{ color: C.fg3 }}>{srcName}</span>
-                                </span>
-                                <button
-                                  className="p-0.5 rounded transition-colors hover:bg-white/10 flex-shrink-0"
-                                  onClick={() => setReplayCompare(false)}
-                                >
-                                  <X className="h-3.5 w-3.5" style={{ color: C.fg1 }} />
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      <div className="flex-1 min-h-0 flex">
-                        <div className="flex-1 min-w-0 overflow-auto sb">
-                          <RunDetail runId={selectedId} routeBase="/runs" onForkStarted={handleFork} />
-                        </div>
-                        {replayCompare && meta && (
-                          <>
-                            <div className="flex-shrink-0 w-[1px]" style={{ background: C.border }} />
-                            <div className="flex-1 min-w-0 overflow-auto sb">
-                              <RunDetail key={meta.replay.sourceRunId} runId={meta.replay.sourceRunId} />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()
-              : <EmptyState
-                  firstTime={!hasUserTraces && !firstTimeSetupDismissed}
-                  onFirstTimeDone={dismissFirstTimeSetup}
-                  onSeeDemoTraces={openDemoTrace}
+            ? <div className="text-center text-xs mt-8" style={{ color: "#5a6a72" }}>
+                {search ? "No matching runs" : "No runs"}
+              </div>
+            : filtered.map(run => (
+                <RunTableRow key={run.id} run={run}
+                  selected={run.id === selectedId}
+                  highlighted={run.id === hoveredSourceId}
+                  faded={!!hoveredSourceId && run.id !== hoveredSourceId}
+                  onClick={() => handleSelectRun(run.id)}
                 />
-        }
+              ))}
+        </div>
       </div>
     </div>
   );

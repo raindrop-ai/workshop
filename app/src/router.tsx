@@ -10,6 +10,7 @@ import {
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { NavSidebar } from "./components/NavSidebar";
 import { MessagePane } from "./components/MessagePane";
+import { CaseContextPanel } from "./components/CaseContextPanel";
 import { RunsPage } from "./pages/RunsPage";
 import { SearchPage } from "./pages/SearchPage";
 import { SavedPage } from "./pages/SavedPage";
@@ -72,6 +73,9 @@ function AppLayout() {
               <Outlet />
             </div>
             <MessagePane activeRunId={activeRunId} />
+          </div>
+          <div className="absolute left-3 top-14 z-30 max-w-[calc(100vw-96px)]">
+            <CaseContextPanel selectedRunId={activeRunId} floating />
           </div>
           {showDisconnectedNotice && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/35 px-6">
