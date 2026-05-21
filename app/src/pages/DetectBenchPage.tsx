@@ -261,37 +261,6 @@ export function DetectBenchPage() {
               <div><span className="text-[32px] font-semibold" style={{ color: C.fg5 }}>{siemCount}</span> <span className="text-[13px]" style={{ color: C.fg0 }}>SIEM {siemCount === 1 ? "platform" : "platforms"}</span></div>
             </div>
           </Panel>
-
-          <Panel title="About This Benchmark">
-            <p className="text-[14px] leading-6" style={{ color: C.fg1 }}>
-              DetectBench contains hand-picked tasks that mirror detection engineering work. If a task can be completed by an agent with only access to the SIEM and a customer request, it belongs in this benchmark.
-            </p>
-            <p className="mt-4 text-[14px] leading-6" style={{ color: C.fg1 }}>
-              The suite spans production bug reports, tactical tickets, red team reports, threat models, and health checks across cloud, SaaS, identity, endpoint, and network telemetry.
-            </p>
-          </Panel>
-
-          <Panel title="Sample Scenarios">
-            <div className="space-y-4 border-l-2 pl-4" style={{ borderColor: "#F5CE4E" }}>
-              <div>
-                <div className="text-[13px] italic leading-5" style={{ color: C.fg0 }}>Q: Generate a detection rule for brute force authentication attempts with more than 10 failed logins in 5 minutes.</div>
-                <div className="mt-1 text-[13px] leading-5" style={{ color: "#F5CE4E" }}>A: Detection rule with threshold-based correlation...</div>
-              </div>
-              <div>
-                <div className="text-[13px] italic leading-5" style={{ color: C.fg0 }}>Q: Create an alert for lateral movement using PsExec with service account credentials.</div>
-                <div className="mt-1 text-[13px] leading-5" style={{ color: "#F5CE4E" }}>A: Multi-stage detection with process and network correlation...</div>
-              </div>
-            </div>
-          </Panel>
-
-          <Panel title="Methodology">
-            <div className="space-y-3 text-[14px]" style={{ color: C.fg1 }}>
-              <div><span className="font-semibold" style={{ color: C.fg4 }}>Accuracy:</span> Output matches expected detection logic and implementation status.</div>
-              <div><span className="font-semibold" style={{ color: C.fg4 }}>Coverage:</span> Rule addresses the relevant attack behavior and required data sources.</div>
-              <div><span className="font-semibold" style={{ color: C.fg4 }}>Performance:</span> Query is practical for repeated execution in the target SIEM.</div>
-              <div><span className="font-semibold" style={{ color: C.fg4 }}>Latency:</span> Time to generate a complete detection rule or failure-mode decision.</div>
-            </div>
-          </Panel>
         </aside>
       </div>
     </div>
