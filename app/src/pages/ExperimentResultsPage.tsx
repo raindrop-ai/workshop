@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, RefreshCw, Search } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExternalLink, Loader2, RefreshCw, Search } from "lucide-react";
 import { getExperimentResults, type ExperimentDatasetResult, type ExperimentRunPoint, type LangfuseSource } from "../api/research";
 import { C, spanColor } from "../utils/colors";
 
@@ -25,9 +25,23 @@ function scoreLabel(score: number | null | undefined) {
   return score == null ? "--" : `${score}%`;
 }
 
+function isPendingRun(point: ExperimentRunPoint | null | undefined) {
+  return Boolean(point?.runName && point.score === null);
+}
+
+function PendingRunLabel({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className="inline-flex items-center justify-center gap-1" style={{ color: C.fg1 }}>
+      <Loader2 className={`${compact ? "size-3" : "size-3.5"} animate-spin`} />
+      <span>{compact ? "pending" : "waiting"}</span>
+    </span>
+  );
+}
+
 function DatasetCard({ dataset }: { dataset: ExperimentDatasetResult }) {
   const latest = dataset.latestRun;
   const color = scoreColor(latest?.score);
+  const pending = isPendingRun(latest);
   return (
     <div
       className="min-w-0 rounded-lg border p-3"
@@ -39,10 +53,10 @@ function DatasetCard({ dataset }: { dataset: ExperimentDatasetResult }) {
           <div className="mt-1 truncate text-[10px] font-mono" style={{ color: C.fg0 }}>{dataset.agent}</div>
         </div>
         <div
-          className="flex h-11 min-w-[64px] items-center justify-center rounded-md border text-[18px] font-semibold"
-          style={{ color, background: `${color}16`, borderColor: `${color}55` }}
+          className="flex h-11 min-w-[76px] items-center justify-center rounded-md border text-[18px] font-semibold"
+          style={{ color, background: pending ? "rgba(255,255,255,0.035)" : `${color}16`, borderColor: pending ? "rgba(255,255,255,0.12)" : `${color}55` }}
         >
-          {scoreLabel(latest?.score)}
+          {pending ? <PendingRunLabel /> : scoreLabel(latest?.score)}
         </div>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-2 text-[10px] font-mono" style={{ color: C.fg0 }}>
@@ -145,12 +159,13 @@ function TrendChart({ points }: { points: ExperimentRunPoint[] }) {
 
 function ExperimentRunsTable({ points }: { points: ExperimentRunPoint[] }) {
   const rows = [...points].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const gridTemplateColumns = "minmax(260px,2fr) 92px minmax(160px,1fr) 128px 74px";
   return (
     <div className="overflow-hidden rounded-lg border" style={{ background: "rgba(255,255,255,0.02)", borderColor: C.border }}>
       <div
         className="grid px-3 py-2 text-[10px] font-mono uppercase tracking-wide"
         style={{
-          gridTemplateColumns: "minmax(260px,2fr) 72px minmax(160px,1fr) 128px 74px",
+          gridTemplateColumns,
           columnGap: 12,
           color: C.fg0,
           borderBottom: "1px solid rgba(255,255,255,0.06)",
@@ -167,12 +182,13 @@ function ExperimentRunsTable({ points }: { points: ExperimentRunPoint[] }) {
           <div className="px-3 py-8 text-center text-sm" style={{ color: C.fg0 }}>No experiments match this search.</div>
         ) : rows.map((point) => {
           const color = scoreColor(point.score);
+          const pending = isPendingRun(point);
           return (
             <div
               key={`${point.datasetName}-${point.runName}`}
               className="grid items-center px-3 py-2 text-[11px]"
               style={{
-                gridTemplateColumns: "minmax(260px,2fr) 72px minmax(160px,1fr) 128px 74px",
+                gridTemplateColumns,
                 columnGap: 12,
                 borderBottom: "1px solid rgba(255,255,255,0.04)",
               }}
@@ -182,10 +198,10 @@ function ExperimentRunsTable({ points }: { points: ExperimentRunPoint[] }) {
                 <div className="mt-0.5 truncate text-[10px] font-mono" style={{ color: C.fg0 }}>{point.datasetName}</div>
               </div>
               <div
-                className="inline-flex h-7 w-[58px] items-center justify-center rounded border text-[12px] font-semibold"
-                style={{ color, background: `${color}16`, borderColor: `${color}55` }}
+                className="inline-flex h-7 w-[78px] items-center justify-center rounded border text-[11px] font-semibold"
+                style={{ color, background: pending ? "rgba(255,255,255,0.035)" : `${color}16`, borderColor: pending ? "rgba(255,255,255,0.12)" : `${color}55` }}
               >
-                {scoreLabel(point.score)}
+                {pending ? <PendingRunLabel compact /> : scoreLabel(point.score)}
               </div>
               <div className="truncate font-mono" style={{ color: C.fg1 }}>{point.agent}</div>
               <div className="font-mono" style={{ color: C.fg1 }}>{formatTime(point.createdAt)}</div>
@@ -205,26 +221,50 @@ export function ExperimentResultsPage() {
   const [series, setSeries] = useState<ExperimentRunPoint[]>([]);
   const [langfuseUrl, setLangfuseUrl] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasPendingRunsRef = useRef(false);
 
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async ({ background = false, force = false }: { background?: boolean; force?: boolean } = {}) => {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
-      const result = await getExperimentResults({ lfEnv: source });
+      const result = await getExperimentResults({ lfEnv: source, refresh: force || hasPendingRunsRef.current });
       setDatasets(result.datasets);
       setSeries(result.series);
       setLangfuseUrl(result.langfuseUrl);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
-  };
+  }, [source]);
 
   useEffect(() => {
     void load();
-  }, [source]);
+  }, [load]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void load({ background: true });
+    }, 15000);
+    return () => window.clearInterval(interval);
+  }, [load]);
+
+  const allRuns = useMemo(() => datasets.flatMap((dataset) => dataset.runs), [datasets]);
+  const pendingRuns = useMemo(() => allRuns.filter(isPendingRun), [allRuns]);
+
+  useEffect(() => {
+    hasPendingRunsRef.current = pendingRuns.length > 0;
+  }, [pendingRuns.length]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredSeries = useMemo(() => {
@@ -236,6 +276,16 @@ export function ExperimentResultsPage() {
       point.scoreName.toLowerCase().includes(normalizedQuery)
     );
   }, [normalizedQuery, series]);
+  const filteredRuns = useMemo(() => {
+    if (!normalizedQuery) return allRuns;
+    return allRuns.filter((point) =>
+      point.agent.toLowerCase().includes(normalizedQuery) ||
+      point.datasetName.toLowerCase().includes(normalizedQuery) ||
+      point.runName.toLowerCase().includes(normalizedQuery) ||
+      point.scoreName.toLowerCase().includes(normalizedQuery)
+    );
+  }, [allRuns, normalizedQuery]);
+  const filteredPendingRuns = useMemo(() => filteredRuns.filter(isPendingRun), [filteredRuns]);
   const filteredDatasets = useMemo(() => {
     if (!normalizedQuery) return datasets;
     return datasets
@@ -255,7 +305,7 @@ export function ExperimentResultsPage() {
       )
       .map((dataset) => ({
         ...dataset,
-        latestRun: dataset.runs.find((run) => run.score !== null) ?? dataset.latestRun,
+        latestRun: dataset.runs[0] ?? dataset.latestRun,
       }));
   }, [datasets, normalizedQuery]);
 
@@ -294,9 +344,9 @@ export function ExperimentResultsPage() {
           <button
             className="flex h-8 items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-3 text-[11px] font-mono transition-colors hover:bg-white/10"
             style={{ color: C.fg2 }}
-            onClick={() => void load()}
+            onClick={() => void load({ force: true })}
           >
-            <RefreshCw className={`size-3 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`size-3 ${loading || refreshing ? "animate-spin" : ""}`} />
             refresh
           </button>
         </div>
@@ -316,7 +366,9 @@ export function ExperimentResultsPage() {
         <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-[13px] font-medium" style={{ color: C.fg3 }}>Experiment Runs</h2>
-            <div className="mt-0.5 text-[10px] font-mono" style={{ color: C.fg0 }}>{filteredSeries.length} scored runs</div>
+            <div className="mt-0.5 text-[10px] font-mono" style={{ color: C.fg0 }}>
+              {filteredRuns.length} runs · {filteredSeries.length} scored · {filteredPendingRuns.length} pending
+            </div>
           </div>
           <div className="flex w-[520px] max-w-full items-center gap-2 rounded-md border border-white/10 bg-white/[0.04] px-2">
             <Search className="size-3.5" style={{ color: C.fg0 }} />
@@ -329,13 +381,13 @@ export function ExperimentResultsPage() {
             />
           </div>
         </div>
-        <ExperimentRunsTable points={filteredSeries} />
+        <ExperimentRunsTable points={filteredRuns} />
       </div>
 
       <div className="mb-2 flex items-center justify-between">
         <h2 className="text-[13px] font-medium" style={{ color: C.fg3 }}>Datasets</h2>
         <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>
-          {filteredDatasets.length} datasets · {filteredSeries.length} scored runs
+          {filteredDatasets.length} datasets · {filteredSeries.length} scored runs · {filteredPendingRuns.length} pending
         </span>
       </div>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">

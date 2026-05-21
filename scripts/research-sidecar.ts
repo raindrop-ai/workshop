@@ -240,9 +240,9 @@ function normalizeDataset(dataset: any) {
   };
 }
 
-async function fetchAllScores(kind: string) {
+async function fetchAllScores(kind: string, force = false) {
   const cached = scoreCache.get(kind);
-  if (cached && cached.expiresAt > Date.now()) return cached.scores;
+  if (!force && cached && cached.expiresAt > Date.now()) return cached.scores;
 
   const maxPages = kind === "onprem" ? 300 : 10;
   const firstPage = await langfuseGet(kind, "scores?page=1&limit=100");
@@ -305,12 +305,13 @@ function summarizeRunScores(run: any, dataset: any, allScores: any[]) {
 
 async function experimentResults(url: URL) {
   const kind = url.searchParams.get("lfEnv") || "prod";
+  const forceScores = url.searchParams.get("refresh") === "1";
   const datasetsResponse = await langfuseGet(kind, "datasets?page=1&limit=100");
   let datasets = (datasetsResponse.data ?? []).map(normalizeDataset);
   if (kind === "onprem") {
     datasets = datasets.filter((dataset: any) => dataset.name === ONPREM_EXPERIMENT_DATASET || dataset.id === "cmlrbd6t10009x907vuqz1owu");
   }
-  const allScores = await fetchAllScores(kind);
+  const allScores = await fetchAllScores(kind, forceScores);
   const results = [];
   const series = [];
 
@@ -342,7 +343,7 @@ async function experimentResults(url: URL) {
       if (point.score !== null) series.push(point);
     }
     runs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    const latestRun = runs.find((run) => run.score !== null) ?? runs[0] ?? null;
+    const latestRun = runs[0] ?? null;
     results.push({
       id: detail.id,
       name: detail.name,

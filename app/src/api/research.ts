@@ -129,9 +129,10 @@ export async function getLangfuseDatasetStats(input: {
   return apiJson<LangfuseDatasetStats>(`/research-api/langfuse/dataset-stats?${params}`);
 }
 
-export async function getExperimentResults(input: { lfEnv?: LangfuseSource } = {}): Promise<ExperimentResultsResponse> {
+export async function getExperimentResults(input: { lfEnv?: LangfuseSource; refresh?: boolean } = {}): Promise<ExperimentResultsResponse> {
   const params = new URLSearchParams();
   if (input.lfEnv) params.set("lfEnv", input.lfEnv);
+  if (input.refresh) params.set("refresh", "1");
   const qs = params.toString();
   return apiJson<ExperimentResultsResponse>(`/research-api/langfuse/experiment-results${qs ? `?${qs}` : ""}`);
 }
