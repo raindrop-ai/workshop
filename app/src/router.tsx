@@ -11,6 +11,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { NavSidebar } from "./components/NavSidebar";
 import { MessagePane } from "./components/MessagePane";
 import { CaseContextPanel } from "./components/CaseContextPanel";
+import { DetectBenchPage } from "./pages/DetectBenchPage";
 import { ExperimentResultsPage } from "./pages/ExperimentResultsPage";
 import { RunsPage } from "./pages/RunsPage";
 import { SearchPage } from "./pages/SearchPage";
@@ -108,6 +109,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/runs" replace /> },
       { path: "experiments", element: <ExperimentResultsPage /> },
+      { path: "detectbench", element: <DetectBenchPage /> },
       { path: "runs", element: <RunsPage /> },
       { path: "runs/:runId/span/:spanId", element: <RunsPage /> },
       { path: "runs/:runId/spans", element: <RunsPage /> },
