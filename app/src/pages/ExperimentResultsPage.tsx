@@ -8,6 +8,10 @@ const SOURCES: Array<{ id: LangfuseSource; label: string }> = [
   { id: "onprem", label: "On Prem" },
 ];
 
+const PENDING_COLOR = "#38BDF8";
+const PENDING_BACKGROUND = "rgba(56,189,248,0.18)";
+const PENDING_BORDER = "rgba(56,189,248,0.62)";
+
 function scoreColor(score: number | null | undefined) {
   if (score == null) return C.fg0;
   if (score >= 70) return C.green;
@@ -31,7 +35,7 @@ function isPendingRun(point: ExperimentRunPoint | null | undefined) {
 
 function PendingRunLabel({ compact = false }: { compact?: boolean }) {
   return (
-    <span className="inline-flex items-center justify-center gap-1" style={{ color: C.fg1 }}>
+    <span className="inline-flex items-center justify-center gap-1" style={{ color: PENDING_COLOR }}>
       <Loader2 className={`${compact ? "size-3" : "size-3.5"} animate-spin`} />
       <span>{compact ? "pending" : "waiting"}</span>
     </span>
@@ -54,7 +58,7 @@ function DatasetCard({ dataset }: { dataset: ExperimentDatasetResult }) {
         </div>
         <div
           className="flex h-11 min-w-[76px] items-center justify-center rounded-md border text-[18px] font-semibold"
-          style={{ color, background: pending ? "rgba(255,255,255,0.035)" : `${color}16`, borderColor: pending ? "rgba(255,255,255,0.12)" : `${color}55` }}
+          style={{ color, background: pending ? PENDING_BACKGROUND : `${color}16`, borderColor: pending ? PENDING_BORDER : `${color}55` }}
         >
           {pending ? <PendingRunLabel /> : scoreLabel(latest?.score)}
         </div>
@@ -199,7 +203,7 @@ function ExperimentRunsTable({ points }: { points: ExperimentRunPoint[] }) {
               </div>
               <div
                 className="inline-flex h-7 w-[78px] items-center justify-center rounded border text-[11px] font-semibold"
-                style={{ color, background: pending ? "rgba(255,255,255,0.035)" : `${color}16`, borderColor: pending ? "rgba(255,255,255,0.12)" : `${color}55` }}
+                style={{ color, background: pending ? PENDING_BACKGROUND : `${color}16`, borderColor: pending ? PENDING_BORDER : `${color}55` }}
               >
                 {pending ? <PendingRunLabel compact /> : scoreLabel(point.score)}
               </div>
