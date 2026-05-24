@@ -17,7 +17,7 @@ import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContex
 import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
-import { getCodexSession, listCodexSessions } from "./codex-sessions";
+import { forkCodexSession, getCodexSession, listCodexSessions } from "./codex-sessions";
 import { runClaudeCliChat } from "./claude-cli-chat";
 import { runCodexCliChat } from "./codex-cli-chat";
 import {
@@ -1148,7 +1148,7 @@ export async function createServer(port: number) {
   });
 
   app.post("/api/agent/messages", async (req, res) => {
-    const { content, session_id, run_id, client_message_id } = req.body ?? {};
+    const { content, session_id, fork_session_id, run_id, client_message_id } = req.body ?? {};
     if (typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "content required" });
       return;
@@ -1157,7 +1157,15 @@ export async function createServer(port: number) {
       res.status(400).json({ error: "session_id must be a string" });
       return;
     }
+    if (fork_session_id != null && typeof fork_session_id !== "string") {
+      res.status(400).json({ error: "fork_session_id must be a string" });
+      return;
+    }
     const requestProvider = agentProvider;
+    if (fork_session_id && requestProvider !== "codex") {
+      res.status(400).json({ error: "Forking existing chats is only supported for Codex." });
+      return;
+    }
     if (requestProvider === "claude" && !claudeCliChatEnabled) {
       res.status(409).json({ error: "Claude Code chat is disabled" });
       return;
@@ -1166,6 +1174,14 @@ export async function createServer(port: number) {
     if (!workspace) return;
 
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
+    if (requestProvider === "codex" && typeof fork_session_id === "string" && fork_session_id) {
+      const fork = forkCodexSession(workspace.cwd, fork_session_id);
+      if (!fork) {
+        res.status(404).json({ error: "Codex session to fork was not found." });
+        return;
+      }
+      providerSessionId = fork.id;
+    }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
       : randomUUID();

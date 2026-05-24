@@ -150,6 +150,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const [width, setWidth] = useState<number>(loadWidth);
   const [sessions, setSessions] = useState<ClaudeSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [forkSourceId, setForkSourceId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ClaudeSessionDetail | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -296,9 +297,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     hiddenPendingSessionIdsRef.current.delete(id);
     suppressPendingUntilNextSendRef.current = false;
     setSelectedId(id);
+    setForkSourceId(provider === "codex" && activeRunId ? id : null);
     setDetail(await res.json());
     setShowList(false);
-  }, [pendingQuestions, provider]);
+  }, [activeRunId, pendingQuestions, provider]);
 
   useEffect(() => {
     void refreshSessions();
@@ -356,6 +358,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   useEffect(() => {
     if (!draft.startsWith("/")) setShowSlash(false);
   }, [draft]);
+
+  useEffect(() => {
+    if (provider !== "codex" || !activeRunId) setForkSourceId(null);
+  }, [activeRunId, provider]);
 
   useEffect(() => {
     setActiveSlashIndex(0);
@@ -416,7 +422,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   useWorkshopEvent("agent_message_stream", (data: ClaudeMessageStream) => {
     if (!data?.client_message_id || data.client_message_id !== activeClientMessageIdRef.current) return;
-    if (data.session_id) setSelectedId(data.session_id);
+    if (data.session_id) {
+      setSelectedId(data.session_id);
+      setForkSourceId((current) => data.session_id === current ? current : null);
+    }
     const event = data.event;
     if (!event) return;
     if (event.type === "loadout") setLoadout(event);
@@ -441,6 +450,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     if (typeof commandResult === "string") content = commandResult;
     suppressPendingUntilNextSendRef.current = false;
     const clientMessageId = `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const shouldForkCodexSession = provider === "codex" && !!activeRunId && !!forkSourceId && selectedId === forkSourceId;
     activeClientMessageIdRef.current = clientMessageId;
     liveBlocksRef.current = [];
     setLiveBlocks([]);
@@ -472,7 +482,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content,
-          session_id: selectedId,
+          session_id: shouldForkCodexSession ? null : selectedId,
+          fork_session_id: shouldForkCodexSession ? forkSourceId : null,
           run_id: activeRunId ?? null,
           client_message_id: clientMessageId,
         }),
@@ -480,7 +491,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const body = await res.json().catch(() => null);
       if (activeClientMessageIdRef.current !== clientMessageId) return;
       if (!res.ok) throw new Error(body?.error ?? `${providerLabel(provider)} request failed (${res.status})`);
-      if (body?.session_id) setSelectedId(body.session_id);
+      if (body?.session_id) {
+        setSelectedId(body.session_id);
+        setForkSourceId(null);
+      }
       if (body?.session) {
         setDetail(appendLiveCompletionIfMissing(body.session, liveBlocksRef.current));
       } else if (typeof body?.text === "string") {
@@ -513,6 +527,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     activeClientMessageIdRef.current = null;
     liveBlocksRef.current = [];
     setSelectedId(null);
+    setForkSourceId(null);
     setDetail(null);
     setLiveBlocks([]);
     setSending(false);
@@ -610,6 +625,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const visiblePendingQuestions = pendingQuestions.filter((question) => question.session_id === selectedId);
   const visibleLiveBlocks = visibleAssistantBlocks(liveBlocks);
   const showTraceDebugPrompt = !!activeRunId && messages.length === 0 && !sending && visibleLiveBlocks.length === 0;
+  const codexTraceForkMode = provider === "codex" && !!activeRunId;
+  const forkingFromSelectedChat = codexTraceForkMode && !!forkSourceId && selectedId === forkSourceId;
   const slashItems = useMemo(() => buildSlashItems(loadout, draft, provider), [loadout, draft, provider]);
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
   const currentCwd = detail?.cwd ?? workspaceCwd;
@@ -781,6 +798,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           providerError={error}
           providerBusy={switchingProvider}
           showProviderIntro={showProviderIntro}
+          traceForkMode={codexTraceForkMode}
           onProviderIntroChoice={chooseIntroProvider}
           onSelect={(id) => void loadSession(id)}
           onNew={startNewChat}
@@ -788,6 +806,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       ) : (
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={scrollRef} className={`flex-1 overflow-y-auto px-3 pt-3 ${showTraceDebugPrompt ? "pb-44" : "pb-36"} space-y-3 text-sm`}>
+            {forkingFromSelectedChat && <CodexForkNotice />}
             {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
             {visibleLiveBlocks.length > 0 && (
               <div className="message-arrive flex flex-col items-start gap-2">
@@ -1264,6 +1283,7 @@ function ChatList({
   providerError,
   providerBusy,
   showProviderIntro,
+  traceForkMode,
   onProviderIntroChoice,
   onSelect,
   onNew,
@@ -1275,6 +1295,7 @@ function ChatList({
   providerError: string | null;
   providerBusy: boolean;
   showProviderIntro: boolean;
+  traceForkMode: boolean;
   onProviderIntroChoice: (provider: AgentProviderId) => void;
   onSelect: (id: string) => void;
   onNew: () => void;
@@ -1361,6 +1382,11 @@ function ChatList({
             <Plus className="h-4 w-4" />
             New chat
           </button>
+          {traceForkMode && (
+            <div className="mb-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/65">
+              Pick a Codex chat to fork it for this trace. The original chat stays untouched.
+            </div>
+          )}
           <div className="space-y-1">
             {sessions.length === 0 ? (
               <div className="px-3 py-8 text-center text-xs text-white/40">No {providerLabel(provider)} chats yet.</div>
@@ -1372,6 +1398,7 @@ function ChatList({
                 workspaceCwd={workspaceCwd}
                 provider={provider}
                 copied={copiedId === session.id}
+                forkMode={traceForkMode}
                 onSelect={onSelect}
                 onCopy={copyResumeCommand}
               />
@@ -1445,6 +1472,7 @@ function ChatListItem({
   workspaceCwd,
   provider,
   copied,
+  forkMode,
   onSelect,
   onCopy,
 }: {
@@ -1453,6 +1481,7 @@ function ChatListItem({
   workspaceCwd: string | null;
   provider: AgentProviderId;
   copied: boolean;
+  forkMode: boolean;
   onSelect: (id: string) => void;
   onCopy: (event: SyntheticEvent, session: ClaudeSessionSummary) => Promise<void>;
 }) {
@@ -1485,7 +1514,7 @@ function ChatListItem({
         </span>
       </div>
       <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-white/30">
-        <span>{session.id.slice(0, 8)} · {session.message_count} messages</span>
+        <span>{forkMode && selected ? "fork source" : `${session.id.slice(0, 8)} · ${session.message_count} messages`}</span>
         <span className="h-3 w-px bg-white/10" />
         <button
           type="button"
@@ -1571,6 +1600,14 @@ function TraceDebugPrompt({ onPrompt }: { onPrompt: (prompt: string) => void }) 
           {prompt}
         </button>
       ))}
+    </div>
+  );
+}
+
+function CodexForkNotice() {
+  return (
+    <div className="rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/70">
+      This Codex chat will be forked when you send. The fork gets this trace attached, and the original chat stays untouched.
     </div>
   );
 }

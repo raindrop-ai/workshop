@@ -1,4 +1,5 @@
 import fs from "fs";
+import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
 import type {
@@ -9,6 +10,7 @@ import type {
 } from "./claude-sessions";
 
 const MAX_SESSION_FILES = 300;
+const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export function listCodexSessions(cwd: string): ClaudeSessionSummary[] {
   return codexSessionFiles()
@@ -19,13 +21,32 @@ export function listCodexSessions(cwd: string): ClaudeSessionSummary[] {
 }
 
 export function getCodexSession(cwd: string, sessionId: string): ClaudeSessionDetail | null {
-  if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return null;
-  for (const file of codexSessionFiles()) {
-    if (!path.basename(file).includes(sessionId)) continue;
-    const session = readCodexSessionFile(file);
-    if (session?.cwd === cwd && session.id === sessionId) return session;
-  }
-  return null;
+  const file = findCodexSessionFile(cwd, sessionId);
+  return file ? readCodexSessionFile(file) : null;
+}
+
+export function forkCodexSession(cwd: string, sourceSessionId: string): ClaudeSessionSummary | null {
+  const sourceFile = findCodexSessionFile(cwd, sourceSessionId);
+  if (!sourceFile) return null;
+
+  const forkId = randomUUID();
+  const now = new Date();
+  const forkPath = codexSessionPath(now, forkId);
+  let forkedCurrentSessionMeta = false;
+  const forkedLines = fs
+    .readFileSync(sourceFile, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      if (forkedCurrentSessionMeta || !isSessionMetaLine(line)) return line;
+      forkedCurrentSessionMeta = true;
+      return forkCodexSessionLine(line, forkId, now, sourceSessionId);
+    });
+
+  fs.mkdirSync(path.dirname(forkPath), { recursive: true });
+  fs.writeFileSync(forkPath, `${forkedLines.join("\n")}\n`);
+
+  return readCodexSessionFile(forkPath);
 }
 
 function codexSessionFiles(): string[] {
@@ -35,6 +56,47 @@ function codexSessionFiles(): string[] {
   return files
     .sort((a, b) => safeMtimeMs(b) - safeMtimeMs(a))
     .slice(0, MAX_SESSION_FILES);
+}
+
+function findCodexSessionFile(cwd: string, sessionId: string): string | null {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return null;
+  for (const file of codexSessionFiles()) {
+    if (!path.basename(file).includes(sessionId)) continue;
+    const session = readCodexSessionFile(file);
+    if (session?.cwd === cwd && session.id === sessionId) return file;
+  }
+  return null;
+}
+
+function codexSessionPath(date: Date, sessionId: string): string {
+  const root = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions");
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const stamp = date.toISOString().replace(/\.\d{3}Z$/, "").replace(/:/g, "-");
+  return path.join(root, year, month, day, `rollout-${stamp}-${sessionId}.jsonl`);
+}
+
+function forkCodexSessionLine(line: string, forkId: string, now: Date, sourceSessionId: string): string {
+  const event = parseLine(line);
+  if (!event || event.type !== "session_meta") return line;
+
+  const payload = objectValue(event.payload);
+  if (!payload) return line;
+
+  event.timestamp = now.toISOString();
+  event.payload = {
+    ...payload,
+    id: forkId,
+    timestamp: now.toISOString(),
+    forked_from_id: sourceSessionId,
+    originator: "workshop_codex_fork",
+  };
+  return JSON.stringify(event);
+}
+
+function isSessionMetaLine(line: string): boolean {
+  return parseLine(line)?.type === "session_meta";
 }
 
 function collectJsonlFiles(dir: string, files: string[]) {
@@ -64,6 +126,7 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
   let workshopTurnOpen = false;
+  let currentSessionMetaRead = false;
   let assistantBlocks: ClaudeChatMessageBlock[] = [];
   let assistantTimestamp: string | null = null;
 
@@ -94,9 +157,12 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
     }
 
     if (event.type === "session_meta") {
-      const payload = objectValue(event.payload);
-      if (typeof payload?.id === "string") id = payload.id;
-      if (typeof payload?.cwd === "string") cwd = payload.cwd;
+      if (!currentSessionMetaRead) {
+        const payload = objectValue(event.payload);
+        if (typeof payload?.id === "string") id = payload.id;
+        if (typeof payload?.cwd === "string") cwd = payload.cwd;
+        currentSessionMetaRead = true;
+      }
       continue;
     }
 
