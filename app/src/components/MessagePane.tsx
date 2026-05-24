@@ -290,6 +290,28 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   const loadSession = useCallback(async (id: string) => {
     setError(null);
+    if (provider === "codex" && activeRunId) {
+      const summary = sessions.find((session) => session.id === id);
+      if (!summary) {
+        setError(`Could not load ${providerLabel(provider)} session.`);
+        return;
+      }
+      pendingQuestions.forEach((question) => {
+        if (question.session_id === id) hiddenPendingQuestionIdsRef.current.delete(question.id);
+      });
+      hiddenPendingSessionIdsRef.current.delete(id);
+      suppressPendingUntilNextSendRef.current = false;
+      setSelectedId(id);
+      setForkSourceId(id);
+      setDetail({
+        ...summary,
+        loaded_message_count: 0,
+        messages_truncated: false,
+        messages: [],
+      });
+      setShowList(false);
+      return;
+    }
     const url = provider === "codex"
       ? `/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`
       : `/api/agent/sessions/${encodeURIComponent(id)}`;
@@ -307,7 +329,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     setForkSourceId(provider === "codex" && activeRunId ? id : null);
     setDetail(await res.json());
     setShowList(false);
-  }, [activeRunId, pendingQuestions, provider]);
+  }, [activeRunId, pendingQuestions, provider, sessions]);
 
   useEffect(() => {
     void refreshSessions();
@@ -518,7 +540,12 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         setForkSourceId(null);
       }
       if (body?.session) {
-        setDetail(appendLiveCompletionIfMissing(body.session, liveBlocksRef.current));
+        const capturedBlocks = liveBlocksRef.current.length
+          ? liveBlocksRef.current
+          : typeof body.text === "string"
+            ? [{ type: "text" as const, text: body.text }]
+            : [];
+        setDetail(appendLiveCompletionIfMissing(body.session, capturedBlocks));
       } else if (typeof body?.text === "string") {
         const capturedBlocks = liveBlocksRef.current.length
           ? liveBlocksRef.current
@@ -560,7 +587,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   }
 
   async function switchProvider(next: AgentProviderId) {
-    if (next === provider || switchingProvider) return;
+    if (switchingProvider) return;
+    if (next === provider) {
+      startNewChat();
+      setShowList(true);
+      void refreshSessions();
+      return;
+    }
     const previous = provider;
     setProvider(next);
     setError(null);
@@ -1169,14 +1202,13 @@ function appendLiveCompletionIfMissing(
   const blocks = visibleAssistantBlocks(liveBlocks);
   if (!blocks.length) return session;
 
-  const lastUserIndex = findLastMessageIndex(session.messages, "user");
-  const hasAssistantAfterUser = session.messages
-    .slice(Math.max(0, lastUserIndex + 1))
-    .some((message) => message.role === "assistant" && parseAssistantBlocks(message).length > 0);
-  if (hasAssistantAfterUser) return session;
-
   const content = assistantBlocksText(blocks);
   if (!content.trim()) return session;
+  const alreadyPresent = session.messages.some((message) => (
+    message.role === "assistant" &&
+    assistantBlocksText(parseAssistantBlocks(message)).trim() === content.trim()
+  ));
+  if (alreadyPresent) return session;
 
   return {
     ...session,
@@ -1191,13 +1223,6 @@ function appendLiveCompletionIfMissing(
       },
     ],
   };
-}
-
-function findLastMessageIndex(messages: ClaudeChatMessage[], role: Role): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === role) return i;
-  }
-  return -1;
 }
 
 function assistantBlocksText(blocks: AssistantMessageBlock[]): string {
