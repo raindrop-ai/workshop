@@ -1487,6 +1487,8 @@ function ChatListItem({
 }) {
   const cwd = session.cwd ?? workspaceCwd;
   const cwdDisplay = formatCwdDisplay(cwd);
+  const title = sessionTitle(session, provider);
+  const preview = provider === "codex" ? session.preview : null;
   return (
     <div
       role="button"
@@ -1504,9 +1506,14 @@ function ChatListItem({
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="truncate text-xs font-medium">{session.preview || "Untitled chat"}</div>
+        <div className="truncate text-xs font-medium" title={title}>{title}</div>
         <div className="shrink-0 text-[10px] text-white/35">{formatSessionTime(session.updated_at)}</div>
       </div>
+      {preview && (
+        <div className="mt-1 truncate text-[11px] text-white/55" title={preview}>
+          {preview}
+        </div>
+      )}
       <div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/35">
         <Terminal className="h-3 w-3 shrink-0" />
         <span className="truncate" title={cwd ?? "Working directory unavailable"}>
@@ -1532,6 +1539,11 @@ function ChatListItem({
       </div>
     </div>
   );
+}
+
+function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
+  if (provider === "codex") return `Codex chat ${session.id.slice(0, 8)}`;
+  return session.preview || "Untitled chat";
 }
 
 function ChatPreviewItem({

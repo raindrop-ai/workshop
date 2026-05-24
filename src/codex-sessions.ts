@@ -286,7 +286,11 @@ function stripWorkshopContext(content: string): string {
 
 function previewText(value: string | null): string | null {
   if (!value) return null;
-  const compact = value.replace(/\s+/g, " ").trim();
+  const compact = value
+    .replace(/<image\b[^>]*>\s*<\/image>/gi, " ")
+    .replace(/\[Image #[0-9]+\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
 }
 
