@@ -273,7 +273,12 @@ function contentText(content: unknown): string {
 }
 
 function isCodexContextUserMessage(content: string): boolean {
-  return content.startsWith("# AGENTS.md instructions");
+  return (
+    content.startsWith("# AGENTS.md instructions") ||
+    content.startsWith("<subagent_notification>") ||
+    content.startsWith("<turn_aborted>") ||
+    content.startsWith("<goal_")
+  );
 }
 
 function stripWorkshopContext(content: string): string {
