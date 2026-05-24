@@ -36,6 +36,7 @@ export interface AgentCliChatInput {
   sessionId?: string | null;
   userMessageId?: string | null;
   resumeSessionId?: string | null;
+  forceAutoCompact?: boolean;
   abortSignal?: AbortSignal;
 }
 

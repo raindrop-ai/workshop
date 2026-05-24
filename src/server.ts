@@ -55,6 +55,12 @@ import {
 } from "./annotations";
 import { replayDefaultDemoTraces } from "./demo-traces";
 
+const CODEX_FORK_COMPACT_PROMPT = [
+  "<workshop_internal_compact_fork>",
+  "Workshop maintenance turn: compact this newly forked Codex conversation before the user's trace-debugging message is sent.",
+  "Do not inspect files or call tools. Reply exactly: Compacted.",
+].join("\n");
+
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
   return value === "user" || value === "claude-code" || value === "codex" ? value : null;
 }
@@ -1175,6 +1181,7 @@ export async function createServer(port: number) {
 
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
     let chatCwd = workspace.cwd;
+    let shouldCompactForkBeforeMessage = false;
     if (requestProvider === "codex" && typeof fork_session_id === "string" && fork_session_id) {
       const fork = forkCodexSession(fork_session_id);
       if (!fork) {
@@ -1183,6 +1190,7 @@ export async function createServer(port: number) {
       }
       providerSessionId = fork.id;
       chatCwd = fork.cwd;
+      shouldCompactForkBeforeMessage = true;
     } else if (requestProvider === "codex" && providerSessionId) {
       const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
       if (existing?.cwd) chatCwd = existing.cwd;
@@ -1204,6 +1212,32 @@ export async function createServer(port: number) {
       if (requestProvider === "claude") broadcast("claude_message_stream", data);
     };
     try {
+      if (requestProvider === "codex" && shouldCompactForkBeforeMessage && providerSessionId) {
+        broadcastStreamEvent({ type: "status", content: "Compacting forked Codex chat..." });
+        const compactResult = await runCodexCliChat({
+          backendUrl: backendUrl(),
+          content: CODEX_FORK_COMPACT_PROMPT,
+          cwd: chatCwd,
+          runId: null,
+          resumeSessionId: providerSessionId,
+          forceAutoCompact: true,
+        }, {
+          onEvent() {},
+          onProviderSession(sessionId) {
+            providerSessionId = sessionId;
+          },
+          onText() {},
+          onStatus() {},
+          onError(nextContent) {
+            errorText = nextContent;
+          },
+        });
+        if (compactResult.code !== 0 || errorText) {
+          throw new Error(errorText || compactResult.stderr || "Failed to compact forked Codex chat.");
+        }
+        errorText = "";
+      }
+
       const chatInput = {
         backendUrl: backendUrl(),
         content,

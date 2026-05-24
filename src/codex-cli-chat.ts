@@ -45,6 +45,14 @@ export function buildCodexArgs(input: CodexCliChatInput): string[] {
     "-c",
     `mcp_servers.raindrop.env={RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)},RAINDROP_WORKSHOP_AGENT_PROVIDER="codex",RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}}`,
   ];
+  if (input.forceAutoCompact) {
+    commonArgs.push(
+      "-c",
+      "model_auto_compact_token_limit=0",
+      "-c",
+      'model_auto_compact_token_limit_scope="total"',
+    );
+  }
   if (process.env.RAINDROP_WORKSHOP_CODEX_BYPASS_PERMISSIONS !== "0") {
     commonArgs.unshift("--dangerously-bypass-approvals-and-sandbox");
   } else {

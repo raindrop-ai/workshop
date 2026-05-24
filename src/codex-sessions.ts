@@ -43,10 +43,12 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   const metadata = readCodexSessionMetadata();
   const sourceFile = findCodexSessionFile(sourceSessionId, null, metadata);
   if (!sourceFile) return null;
+  const source = readCodexSessionSummaryFile(sourceFile, metadata);
 
   const forkId = randomUUID();
   const now = new Date();
   const forkPath = codexSessionPath(now, forkId);
+  const forkTitle = forkedCodexTitle(source?.title ?? source?.preview ?? `Codex chat ${sourceSessionId.slice(0, 8)}`);
   let forkedCurrentSessionMeta = false;
   const forkedLines = fs
     .readFileSync(sourceFile, "utf8")
@@ -55,13 +57,14 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
     .map((line) => {
       if (forkedCurrentSessionMeta || !isSessionMetaLine(line)) return line;
       forkedCurrentSessionMeta = true;
-      return forkCodexSessionLine(line, forkId, now, sourceSessionId);
+      return forkCodexSessionLine(line, forkId, now, sourceSessionId, forkTitle);
     });
 
   fs.mkdirSync(path.dirname(forkPath), { recursive: true });
   fs.writeFileSync(forkPath, `${forkedLines.join("\n")}\n`);
+  writeForkedCodexSqliteMetadata(sourceSessionId, forkId, forkPath, forkTitle, now);
 
-  return readCodexSessionSummaryFile(forkPath, metadata);
+  return readCodexSessionSummaryFile(forkPath, readCodexSessionMetadata());
 }
 
 function codexSessionFiles(): string[] {
@@ -96,7 +99,13 @@ function codexSessionPath(date: Date, sessionId: string): string {
   return path.join(root, year, month, day, `rollout-${stamp}-${sessionId}.jsonl`);
 }
 
-function forkCodexSessionLine(line: string, forkId: string, now: Date, sourceSessionId: string): string {
+function forkCodexSessionLine(
+  line: string,
+  forkId: string,
+  now: Date,
+  sourceSessionId: string,
+  forkTitle: string,
+): string {
   const event = parseLine(line);
   if (!event || event.type !== "session_meta") return line;
 
@@ -110,8 +119,90 @@ function forkCodexSessionLine(line: string, forkId: string, now: Date, sourceSes
     timestamp: now.toISOString(),
     forked_from_id: sourceSessionId,
     originator: "workshop_codex_fork",
+    workshop_title: forkTitle,
   };
   return JSON.stringify(event);
+}
+
+function forkedCodexTitle(title: string | null): string {
+  const cleaned = (title || "Untitled chat").replace(/\s+/g, " ").trim();
+  return cleaned.startsWith("[forked] ") ? cleaned : `[forked] ${cleaned}`;
+}
+
+function writeForkedCodexSqliteMetadata(
+  sourceSessionId: string,
+  forkId: string,
+  forkPath: string,
+  forkTitle: string,
+  now: Date,
+) {
+  const dbPath = codexStateDbPath();
+  if (!dbPath) return;
+
+  let db: Database | null = null;
+  try {
+    db = new Database(dbPath);
+    const source = db
+      .query(`
+        SELECT source, model_provider, cwd, sandbox_policy, approval_mode, cli_version,
+               first_user_message, agent_nickname, agent_role, memory_mode, model,
+               reasoning_effort, agent_path, thread_source, preview, git_sha,
+               git_branch, git_origin_url
+        FROM threads
+        WHERE id = ?
+      `)
+      .get(sourceSessionId) as Record<string, unknown> | null;
+    if (!source) return;
+
+    const seconds = Math.floor(now.getTime() / 1000);
+    db.query(`
+      INSERT OR REPLACE INTO threads (
+        id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+        title, sandbox_policy, approval_mode, tokens_used, has_user_event,
+        archived, archived_at, git_sha, git_branch, git_origin_url, cli_version,
+        first_user_message, agent_nickname, agent_role, memory_mode, model,
+        reasoning_effort, agent_path, created_at_ms, updated_at_ms, thread_source,
+        preview
+      )
+      VALUES (
+        $id, $rollout_path, $created_at, $updated_at, $source, $model_provider, $cwd,
+        $title, $sandbox_policy, $approval_mode, 0, 1, 0, NULL, $git_sha,
+        $git_branch, $git_origin_url, $cli_version, $first_user_message,
+        $agent_nickname, $agent_role, $memory_mode, $model, $reasoning_effort,
+        $agent_path, $created_at_ms, $updated_at_ms, $thread_source, $preview
+      )
+    `).run({
+      $id: forkId,
+      $rollout_path: forkPath,
+      $created_at: seconds,
+      $updated_at: seconds,
+      $source: stringValue(source.source) ?? "workshop",
+      $model_provider: stringValue(source.model_provider) ?? "",
+      $cwd: stringValue(source.cwd) ?? os.homedir(),
+      $title: forkTitle,
+      $sandbox_policy: stringValue(source.sandbox_policy) ?? "",
+      $approval_mode: stringValue(source.approval_mode) ?? "",
+      $git_sha: stringValue(source.git_sha),
+      $git_branch: stringValue(source.git_branch),
+      $git_origin_url: stringValue(source.git_origin_url),
+      $cli_version: stringValue(source.cli_version) ?? "",
+      $first_user_message: stringValue(source.first_user_message) ?? "",
+      $agent_nickname: stringValue(source.agent_nickname),
+      $agent_role: stringValue(source.agent_role),
+      $memory_mode: stringValue(source.memory_mode) ?? "enabled",
+      $model: stringValue(source.model),
+      $reasoning_effort: stringValue(source.reasoning_effort),
+      $agent_path: stringValue(source.agent_path),
+      $created_at_ms: now.getTime(),
+      $updated_at_ms: now.getTime(),
+      $thread_source: stringValue(source.thread_source) ?? "user",
+      $preview: stringValue(source.preview) ?? "",
+    });
+  } catch {
+    return;
+  } finally {
+    db?.close();
+  }
 }
 
 function isSessionMetaLine(line: string): boolean {
@@ -245,10 +336,12 @@ function readCodexSessionSummaryFile(
   let createdAt: string | null = null;
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
+  let fallbackTitle: string | null = null;
   let threadSource: string | null = null;
   let currentSessionMetaRead = false;
   let messageCount = 0;
   let assistantOpen = false;
+  let skipNextMaintenanceAssistant = false;
 
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean);
   for (const line of lines) {
@@ -266,6 +359,7 @@ function readCodexSessionSummaryFile(
         if (typeof payload?.id === "string") id = payload.id;
         if (typeof payload?.cwd === "string") cwd = payload.cwd;
         if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
+        fallbackTitle = stringValue(payload?.workshop_title) ?? stringValue(payload?.title);
         currentSessionMetaRead = true;
       }
       continue;
@@ -281,10 +375,17 @@ function readCodexSessionSummaryFile(
       const content = stripWorkshopContext(contentText(payload.content));
       if (!content.trim()) continue;
       if (role === "user") {
-        if (isCodexContextUserMessage(content)) continue;
+        if (isCodexHiddenUserMessage(content)) {
+          skipNextMaintenanceAssistant = isCodexForkCompactUserMessage(content);
+          continue;
+        }
         assistantOpen = false;
         lastPrompt = content;
         messageCount += 1;
+        continue;
+      }
+      if (skipNextMaintenanceAssistant) {
+        skipNextMaintenanceAssistant = false;
         continue;
       }
       if (!assistantOpen) {
@@ -306,7 +407,7 @@ function readCodexSessionSummaryFile(
     id,
     path: filePath,
     cwd,
-    title: indexed?.title ?? null,
+    title: indexed?.title ?? fallbackTitle ?? null,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -330,10 +431,12 @@ function readCodexSessionFile(
   let createdAt: string | null = null;
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
+  let fallbackTitle: string | null = null;
   let threadSource: string | null = null;
   let currentSessionMetaRead = false;
   let assistantBlocks: ClaudeChatMessageBlock[] = [];
   let assistantTimestamp: string | null = null;
+  let skipNextMaintenanceAssistant = false;
   let messageCount = 0;
   let lastUserMessage: ClaudeChatMessage | null = null;
   let lastVisibleMessage: ClaudeChatMessage | null = null;
@@ -380,6 +483,7 @@ function readCodexSessionFile(
         if (typeof payload?.id === "string") id = payload.id;
         if (typeof payload?.cwd === "string") cwd = payload.cwd;
         if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
+        fallbackTitle = stringValue(payload?.workshop_title) ?? stringValue(payload?.title);
         currentSessionMetaRead = true;
       }
       continue;
@@ -396,7 +500,11 @@ function readCodexSessionFile(
       if (role === "user") {
         flushAssistant();
         const content = stripWorkshopContext(rawContent);
-        if (!content.trim() || isCodexContextUserMessage(content)) continue;
+        if (!content.trim()) continue;
+        if (isCodexHiddenUserMessage(content)) {
+          skipNextMaintenanceAssistant = isCodexForkCompactUserMessage(content);
+          continue;
+        }
         lastPrompt = content;
         pushMessage({
           id: `${id || path.basename(filePath, ".jsonl")}-${messageCount}`,
@@ -410,6 +518,10 @@ function readCodexSessionFile(
 
       const content = stripWorkshopContext(rawContent);
       if (!content.trim()) continue;
+      if (skipNextMaintenanceAssistant) {
+        skipNextMaintenanceAssistant = false;
+        continue;
+      }
       assistantBlocks.push({ type: "text", text: content });
       assistantTimestamp ??= timestamp;
       continue;
@@ -452,7 +564,7 @@ function readCodexSessionFile(
     id,
     path: filePath,
     cwd,
-    title: indexed?.title ?? null,
+    title: indexed?.title ?? fallbackTitle ?? null,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -500,13 +612,18 @@ function contentText(content: unknown): string {
     .join("\n");
 }
 
-function isCodexContextUserMessage(content: string): boolean {
+function isCodexHiddenUserMessage(content: string): boolean {
   return (
     content.startsWith("# AGENTS.md instructions") ||
     content.startsWith("<subagent_notification>") ||
     content.startsWith("<turn_aborted>") ||
-    content.startsWith("<goal_")
+    content.startsWith("<goal_") ||
+    isCodexForkCompactUserMessage(content)
   );
+}
+
+function isCodexForkCompactUserMessage(content: string): boolean {
+  return content.startsWith("<workshop_internal_compact_fork>");
 }
 
 function stripWorkshopContext(content: string): string {
