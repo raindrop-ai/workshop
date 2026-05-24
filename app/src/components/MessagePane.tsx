@@ -33,6 +33,8 @@ interface ClaudeSessionSummary {
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
+  loaded_message_count?: number;
+  messages_truncated?: boolean;
   last_prompt: string | null;
   preview: string | null;
   cwd?: string;
@@ -101,6 +103,7 @@ const PROVIDER_INTRO_SEEN_KEY = "workshop:messagePane:providerIntroSeen";
 const MIN_WIDTH = 360;
 const MAX_WIDTH = 760;
 const DEFAULT_WIDTH = 460;
+const CHAT_DETAIL_MESSAGE_LIMIT = 120;
 const COLLAPSE_PREVIEW_WIDTH = MIN_WIDTH - 24;
 const COLLAPSE_COMMIT_WIDTH = MIN_WIDTH - 78;
 const COLLAPSE_HOLD_MS = 220;
@@ -287,7 +290,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   const loadSession = useCallback(async (id: string) => {
     setError(null);
-    const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`);
+    const url = provider === "codex"
+      ? `/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`
+      : `/api/agent/sessions/${encodeURIComponent(id)}`;
+    const res = await fetch(url);
     if (!res.ok) {
       setError(`Could not load ${providerLabel(provider)} session.`);
       return;
@@ -363,6 +369,21 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   useEffect(() => {
     if (provider !== "codex" || !activeRunId) setForkSourceId(null);
   }, [activeRunId, provider]);
+
+  useEffect(() => {
+    if (provider !== "codex") return;
+    setDetail((current) => {
+      if (!current || current.messages.length <= CHAT_DETAIL_MESSAGE_LIMIT) return current;
+      const total = Math.max(current.message_count, current.messages.length);
+      return {
+        ...current,
+        message_count: total,
+        loaded_message_count: CHAT_DETAIL_MESSAGE_LIMIT,
+        messages_truncated: total > CHAT_DETAIL_MESSAGE_LIMIT,
+        messages: current.messages.slice(-CHAT_DETAIL_MESSAGE_LIMIT),
+      };
+    });
+  }, [detail?.id, detail?.messages.length, provider]);
 
   useEffect(() => {
     setActiveSlashIndex(0);
@@ -809,6 +830,12 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={scrollRef} className={`flex-1 overflow-y-auto px-3 pt-3 ${showTraceDebugPrompt ? "pb-44" : "pb-36"} space-y-3 text-sm`}>
             {forkingFromSelectedChat && <CodexForkNotice />}
+            {detail?.messages_truncated && (
+              <ChatTruncationNotice
+                loaded={detail.loaded_message_count ?? messages.length}
+                total={detail.message_count}
+              />
+            )}
             {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
             {visibleLiveBlocks.length > 0 && (
               <div className="message-arrive flex flex-col items-start gap-2">
@@ -1622,6 +1649,15 @@ function CodexForkNotice() {
   return (
     <div className="rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/70">
       This Codex chat will be forked when you send. The fork gets this trace attached, and the original chat stays untouched.
+    </div>
+  );
+}
+
+function ChatTruncationNotice({ loaded, total }: { loaded: number; total: number }) {
+  const hidden = Math.max(0, total - loaded);
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.045] px-3 py-2 text-xs leading-relaxed text-white/55">
+      Showing the latest {loaded.toLocaleString()} of {total.toLocaleString()} messages. {hidden.toLocaleString()} older messages are not loaded to keep Workshop light.
     </div>
   );
 }

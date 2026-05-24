@@ -22,6 +22,8 @@ export interface ClaudeSessionSummary {
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
+  loaded_message_count?: number;
+  messages_truncated?: boolean;
   last_prompt: string | null;
   preview: string | null;
   cwd?: string;

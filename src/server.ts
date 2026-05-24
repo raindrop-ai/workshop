@@ -1131,7 +1131,7 @@ export async function createServer(port: number) {
     const workspace = activeWorkspaceOrError(res);
     if (!workspace) return;
     if (agentProvider === "codex") {
-      const session = getCodexSession(req.params.id);
+      const session = getCodexSession(req.params.id, null, { messageLimit: parseMessageLimit(req.query.message_limit) });
       if (!session) {
         res.status(404).json({ error: "Codex session not found" });
         return;
@@ -1184,7 +1184,7 @@ export async function createServer(port: number) {
       providerSessionId = fork.id;
       chatCwd = fork.cwd;
     } else if (requestProvider === "codex" && providerSessionId) {
-      const existing = getCodexSession(providerSessionId);
+      const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
       if (existing?.cwd) chatCwd = existing.cwd;
     }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
@@ -1280,6 +1280,13 @@ export async function createServer(port: number) {
       });
     }
   });
+
+  function parseMessageLimit(value: unknown): number {
+    const raw = Array.isArray(value) ? value[0] : value;
+    const parsed = typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
+    if (!Number.isFinite(parsed)) return 120;
+    return Math.max(20, Math.min(500, parsed));
+  }
 
   app.get("/api/claude/sessions", (_req, res) => {
     const workspace = activeWorkspaceOrError(res);

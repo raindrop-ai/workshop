@@ -12,23 +12,31 @@ import type {
 
 const MAX_SESSION_FILES = 300;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const DEFAULT_DETAIL_MESSAGE_LIMIT = 120;
+
+interface CodexSessionReadOptions {
+  messageLimit?: number;
+}
 
 export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
   const metadata = readCodexSessionMetadata();
   return codexSessionFiles()
-    .map((file) => readCodexSessionFile(file, metadata))
-    .filter((session): session is ClaudeSessionDetail => {
+    .map((file) => readCodexSessionSummaryFile(file, metadata))
+    .filter((session): session is ClaudeSessionSummary => {
       if (!session || session.message_count === 0) return false;
       return !cwd || session.cwd === cwd;
     })
     .sort((a, b) => (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0))
-    .map(({ messages: _messages, ...summary }) => summary);
 }
 
-export function getCodexSession(sessionId: string, cwd?: string | null): ClaudeSessionDetail | null {
+export function getCodexSession(
+  sessionId: string,
+  cwd?: string | null,
+  options: CodexSessionReadOptions = {},
+): ClaudeSessionDetail | null {
   const metadata = readCodexSessionMetadata();
   const file = findCodexSessionFile(sessionId, cwd, metadata);
-  return file ? readCodexSessionFile(file, metadata) : null;
+  return file ? readCodexSessionFile(file, metadata, options) : null;
 }
 
 export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary | null {
@@ -53,7 +61,7 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   fs.mkdirSync(path.dirname(forkPath), { recursive: true });
   fs.writeFileSync(forkPath, `${forkedLines.join("\n")}\n`);
 
-  return readCodexSessionFile(forkPath, metadata);
+  return readCodexSessionSummaryFile(forkPath, metadata);
 }
 
 function codexSessionFiles(): string[] {
@@ -73,7 +81,7 @@ function findCodexSessionFile(
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
   for (const file of codexSessionFiles()) {
     if (!path.basename(file).endsWith(`${sessionId}.jsonl`)) continue;
-    const session = readCodexSessionFile(file, metadata);
+    const session = readCodexSessionSummaryFile(file, metadata);
     if (session?.id === sessionId && (!cwd || session.cwd === cwd)) return file;
   }
   return null;
@@ -227,9 +235,92 @@ function isoFromEpoch(epochMs: unknown, epochSeconds: unknown): string | null {
   return seconds ? new Date(seconds * 1000).toISOString() : null;
 }
 
+function readCodexSessionSummaryFile(
+  filePath: string,
+  metadata = readCodexSessionMetadata(),
+): ClaudeSessionSummary | null {
+  if (!fs.existsSync(filePath)) return null;
+  let id = "";
+  let cwd = "";
+  let createdAt: string | null = null;
+  let updatedAt: string | null = null;
+  let lastPrompt: string | null = null;
+  let threadSource: string | null = null;
+  let currentSessionMetaRead = false;
+  let messageCount = 0;
+  let assistantOpen = false;
+
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    const event = parseLine(line);
+    if (!event) continue;
+    const timestamp = typeof event.timestamp === "string" ? event.timestamp : null;
+    if (timestamp) {
+      createdAt ??= timestamp;
+      updatedAt = timestamp;
+    }
+
+    if (event.type === "session_meta") {
+      if (!currentSessionMetaRead) {
+        const payload = objectValue(event.payload);
+        if (typeof payload?.id === "string") id = payload.id;
+        if (typeof payload?.cwd === "string") cwd = payload.cwd;
+        if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
+        currentSessionMetaRead = true;
+      }
+      continue;
+    }
+
+    if (event.type !== "response_item") continue;
+    const payload = objectValue(event.payload);
+    if (!payload) continue;
+
+    if (payload.type === "message") {
+      const role = payload.role === "user" || payload.role === "assistant" ? payload.role : null;
+      if (!role) continue;
+      const content = stripWorkshopContext(contentText(payload.content));
+      if (!content.trim()) continue;
+      if (role === "user") {
+        if (isCodexContextUserMessage(content)) continue;
+        assistantOpen = false;
+        lastPrompt = content;
+        messageCount += 1;
+        continue;
+      }
+      if (!assistantOpen) {
+        messageCount += 1;
+        assistantOpen = true;
+      }
+      continue;
+    }
+
+    if (payload.type === "function_call" && !assistantOpen) {
+      messageCount += 1;
+      assistantOpen = true;
+    }
+  }
+
+  const indexed = metadata.get(id);
+  if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
+  return {
+    id,
+    path: filePath,
+    cwd,
+    title: indexed?.title ?? null,
+    created_at: createdAt ?? indexed?.createdAt ?? null,
+    updated_at: updatedAt ?? indexed?.updatedAt ?? null,
+    message_count: messageCount,
+    loaded_message_count: 0,
+    messages_truncated: messageCount > 0,
+    last_prompt: lastPrompt,
+    preview: previewText(lastPrompt || indexed?.preview || null),
+  };
+}
+
 function readCodexSessionFile(
   filePath: string,
   metadata = readCodexSessionMetadata(),
+  options: CodexSessionReadOptions = {},
 ): ClaudeSessionDetail | null {
   if (!fs.existsSync(filePath)) return null;
   const messages: ClaudeChatMessage[] = [];
@@ -243,13 +334,26 @@ function readCodexSessionFile(
   let currentSessionMetaRead = false;
   let assistantBlocks: ClaudeChatMessageBlock[] = [];
   let assistantTimestamp: string | null = null;
+  let messageCount = 0;
+  let lastUserMessage: ClaudeChatMessage | null = null;
+  let lastVisibleMessage: ClaudeChatMessage | null = null;
+  const messageLimit = options.messageLimit ?? DEFAULT_DETAIL_MESSAGE_LIMIT;
+
+  const pushMessage = (message: ClaudeChatMessage) => {
+    messageCount += 1;
+    lastVisibleMessage = message;
+    if (message.role === "user") lastUserMessage = message;
+    if (messageLimit <= 0) return;
+    messages.push(message);
+    while (messages.length > messageLimit) messages.shift();
+  };
 
   const flushAssistant = () => {
     if (!assistantBlocks.length) return;
     const content = assistantBlocksText(assistantBlocks);
     if (content.trim()) {
-      messages.push({
-        id: `${id || path.basename(filePath, ".jsonl")}-${messages.length}`,
+      pushMessage({
+        id: `${id || path.basename(filePath, ".jsonl")}-${messageCount}`,
         role: "assistant",
         content,
         blocks: assistantBlocks,
@@ -294,8 +398,8 @@ function readCodexSessionFile(
         const content = stripWorkshopContext(rawContent);
         if (!content.trim() || isCodexContextUserMessage(content)) continue;
         lastPrompt = content;
-        messages.push({
-          id: `${id || path.basename(filePath, ".jsonl")}-${messages.length}`,
+        pushMessage({
+          id: `${id || path.basename(filePath, ".jsonl")}-${messageCount}`,
           role,
           content,
           blocks: [{ type: "text", text: content }],
@@ -338,7 +442,12 @@ function readCodexSessionFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
-  const previewMessage = [...messages].reverse().find((message) => message.role === "user") ?? messages[messages.length - 1];
+  const previewSource =
+    lastPrompt ||
+    (lastUserMessage as ClaudeChatMessage | null)?.content ||
+    (lastVisibleMessage as ClaudeChatMessage | null)?.content ||
+    indexed?.preview ||
+    null;
   return {
     id,
     path: filePath,
@@ -346,9 +455,11 @@ function readCodexSessionFile(
     title: indexed?.title ?? null,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
-    message_count: messages.length,
+    message_count: messageCount,
+    loaded_message_count: messages.length,
+    messages_truncated: messageCount > messages.length,
     last_prompt: lastPrompt,
-    preview: previewText(lastPrompt || previewMessage?.content || indexed?.preview || null),
+    preview: previewText(previewSource),
     messages,
   };
 }
