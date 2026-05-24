@@ -12,21 +12,24 @@ import type {
 const MAX_SESSION_FILES = 300;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
-export function listCodexSessions(cwd: string): ClaudeSessionSummary[] {
+export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
   return codexSessionFiles()
     .map((file) => readCodexSessionFile(file))
-    .filter((session): session is ClaudeSessionDetail => !!session && session.cwd === cwd)
+    .filter((session): session is ClaudeSessionDetail => {
+      if (!session || session.message_count === 0) return false;
+      return !cwd || session.cwd === cwd;
+    })
     .sort((a, b) => (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0))
     .map(({ messages: _messages, ...summary }) => summary);
 }
 
-export function getCodexSession(cwd: string, sessionId: string): ClaudeSessionDetail | null {
-  const file = findCodexSessionFile(cwd, sessionId);
+export function getCodexSession(sessionId: string, cwd?: string | null): ClaudeSessionDetail | null {
+  const file = findCodexSessionFile(sessionId, cwd);
   return file ? readCodexSessionFile(file) : null;
 }
 
-export function forkCodexSession(cwd: string, sourceSessionId: string): ClaudeSessionSummary | null {
-  const sourceFile = findCodexSessionFile(cwd, sourceSessionId);
+export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary | null {
+  const sourceFile = findCodexSessionFile(sourceSessionId);
   if (!sourceFile) return null;
 
   const forkId = randomUUID();
@@ -58,12 +61,12 @@ function codexSessionFiles(): string[] {
     .slice(0, MAX_SESSION_FILES);
 }
 
-function findCodexSessionFile(cwd: string, sessionId: string): string | null {
+function findCodexSessionFile(sessionId: string, cwd?: string | null): string | null {
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
   for (const file of codexSessionFiles()) {
-    if (!path.basename(file).includes(sessionId)) continue;
+    if (!path.basename(file).endsWith(`${sessionId}.jsonl`)) continue;
     const session = readCodexSessionFile(file);
-    if (session?.cwd === cwd && session.id === sessionId) return file;
+    if (session?.id === sessionId && (!cwd || session.cwd === cwd)) return file;
   }
   return null;
 }
@@ -125,7 +128,7 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
   let createdAt: string | null = null;
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
-  let workshopTurnOpen = false;
+  let threadSource: string | null = null;
   let currentSessionMetaRead = false;
   let assistantBlocks: ClaudeChatMessageBlock[] = [];
   let assistantTimestamp: string | null = null;
@@ -161,6 +164,7 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
         const payload = objectValue(event.payload);
         if (typeof payload?.id === "string") id = payload.id;
         if (typeof payload?.cwd === "string") cwd = payload.cwd;
+        if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
         currentSessionMetaRead = true;
       }
       continue;
@@ -176,14 +180,9 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
       const rawContent = contentText(payload.content);
       if (role === "user") {
         flushAssistant();
-        if (!isWorkshopUserMessage(rawContent)) {
-          workshopTurnOpen = false;
-          continue;
-        }
         const content = stripWorkshopContext(rawContent);
-        if (!content.trim()) continue;
+        if (!content.trim() || isCodexContextUserMessage(content)) continue;
         lastPrompt = content;
-        workshopTurnOpen = true;
         messages.push({
           id: `${id || path.basename(filePath, ".jsonl")}-${messages.length}`,
           role,
@@ -194,7 +193,6 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
         continue;
       }
 
-      if (!workshopTurnOpen) continue;
       const content = stripWorkshopContext(rawContent);
       if (!content.trim()) continue;
       assistantBlocks.push({ type: "text", text: content });
@@ -202,7 +200,6 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
       continue;
     }
 
-    if (!workshopTurnOpen) continue;
     if (payload.type === "function_call") {
       const callId = stringValue(payload.call_id) ?? `${messages.length}-${assistantBlocks.length}`;
       const block: Extract<ClaudeChatMessageBlock, { type: "tool" }> = {
@@ -228,7 +225,7 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
   }
   flushAssistant();
 
-  if (!id || !cwd) return null;
+  if (!id || !cwd || threadSource === "subagent") return null;
   const previewMessage = [...messages].reverse().find((message) => message.role === "user") ?? messages[messages.length - 1];
   return {
     id,
@@ -275,8 +272,8 @@ function contentText(content: unknown): string {
     .join("\n");
 }
 
-function isWorkshopUserMessage(content: string): boolean {
-  return content.includes("<workshop_message>") || content.includes("Raindrop Workshop chat pane");
+function isCodexContextUserMessage(content: string): boolean {
+  return content.startsWith("# AGENTS.md instructions");
 }
 
 function stripWorkshopContext(content: string): string {

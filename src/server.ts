@@ -1115,7 +1115,7 @@ export async function createServer(port: number) {
     }
     const targetProvider = requestedProvider ?? agentProvider;
     if (targetProvider === "codex") {
-      res.json(listCodexSessions(workspace.cwd));
+      res.json(listCodexSessions());
       return;
     }
     res.json(listClaudeSessions(workspace.cwd));
@@ -1131,7 +1131,7 @@ export async function createServer(port: number) {
     const workspace = activeWorkspaceOrError(res);
     if (!workspace) return;
     if (agentProvider === "codex") {
-      const session = getCodexSession(workspace.cwd, req.params.id);
+      const session = getCodexSession(req.params.id);
       if (!session) {
         res.status(404).json({ error: "Codex session not found" });
         return;
@@ -1174,13 +1174,18 @@ export async function createServer(port: number) {
     if (!workspace) return;
 
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
+    let chatCwd = workspace.cwd;
     if (requestProvider === "codex" && typeof fork_session_id === "string" && fork_session_id) {
-      const fork = forkCodexSession(workspace.cwd, fork_session_id);
+      const fork = forkCodexSession(fork_session_id);
       if (!fork) {
         res.status(404).json({ error: "Codex session to fork was not found." });
         return;
       }
       providerSessionId = fork.id;
+      chatCwd = fork.cwd;
+    } else if (requestProvider === "codex" && providerSessionId) {
+      const existing = getCodexSession(providerSessionId);
+      if (existing?.cwd) chatCwd = existing.cwd;
     }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
@@ -1202,7 +1207,7 @@ export async function createServer(port: number) {
       const chatInput = {
         backendUrl: backendUrl(),
         content,
-        cwd: workspace.cwd,
+        cwd: chatCwd,
         runId: typeof run_id === "string" ? run_id : null,
         resumeSessionId: providerSessionId,
       };
@@ -1263,7 +1268,7 @@ export async function createServer(port: number) {
         session: providerSessionId
           ? requestProvider === "claude"
             ? getClaudeSession(workspace.cwd, providerSessionId)
-            : getCodexSession(workspace.cwd, providerSessionId)
+            : getCodexSession(providerSessionId)
           : null,
       });
     } catch (err) {
