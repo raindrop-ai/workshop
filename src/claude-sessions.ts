@@ -22,6 +22,7 @@ export interface ClaudeSessionSummary {
   id: string;
   path: string;
   cwd: string;
+  title?: string | null;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;

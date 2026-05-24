@@ -29,6 +29,7 @@ type ClaudeChatMessageBlock =
 
 interface ClaudeSessionSummary {
   id: string;
+  title?: string | null;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
@@ -631,6 +632,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
   const currentCwd = detail?.cwd ?? workspaceCwd;
   const currentCwdDisplay = formatCwdDisplay(currentCwd);
+  const currentSessionTitle = detail ? sessionTitle(detail, provider) : "New chat";
 
   useEffect(() => {
     setActiveSlashIndex((index) => Math.min(index, Math.max(0, slashItems.length - 1)));
@@ -735,8 +737,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
             </button>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-white/85" title={detail?.preview ?? detail?.last_prompt ?? "New chat"}>
-                  {detail?.preview ?? detail?.last_prompt ?? "New chat"}
+                <div className="truncate text-sm font-medium text-white/85" title={currentSessionTitle}>
+                  {currentSessionTitle}
                 </div>
                 <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/35">
                   <FolderIcon className="h-3 w-3 shrink-0" />
@@ -1488,7 +1490,7 @@ function ChatListItem({
   const cwd = session.cwd ?? workspaceCwd;
   const cwdDisplay = formatCwdDisplay(cwd);
   const title = sessionTitle(session, provider);
-  const preview = provider === "codex" ? session.preview : null;
+  const preview = provider === "codex" && session.preview && session.preview !== title ? session.preview : null;
   return (
     <div
       role="button"
@@ -1542,8 +1544,8 @@ function ChatListItem({
 }
 
 function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
-  if (provider === "codex") return `Codex chat ${session.id.slice(0, 8)}`;
-  return session.preview || "Untitled chat";
+  if (provider === "codex") return session.title || session.preview || `Codex chat ${session.id.slice(0, 8)}`;
+  return session.title || session.preview || "Untitled chat";
 }
 
 function ChatPreviewItem({

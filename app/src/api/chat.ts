@@ -18,6 +18,7 @@ export interface ClaudeChatMessage {
 
 export interface ClaudeSessionSummary {
   id: string;
+  title?: string | null;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;

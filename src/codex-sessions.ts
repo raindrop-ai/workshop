@@ -2,6 +2,7 @@ import fs from "fs";
 import { randomUUID } from "crypto";
 import os from "os";
 import path from "path";
+import { Database } from "bun:sqlite";
 import type {
   ClaudeChatMessage,
   ClaudeChatMessageBlock,
@@ -13,8 +14,9 @@ const MAX_SESSION_FILES = 300;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
+  const metadata = readCodexSessionMetadata();
   return codexSessionFiles()
-    .map((file) => readCodexSessionFile(file))
+    .map((file) => readCodexSessionFile(file, metadata))
     .filter((session): session is ClaudeSessionDetail => {
       if (!session || session.message_count === 0) return false;
       return !cwd || session.cwd === cwd;
@@ -24,12 +26,14 @@ export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
 }
 
 export function getCodexSession(sessionId: string, cwd?: string | null): ClaudeSessionDetail | null {
-  const file = findCodexSessionFile(sessionId, cwd);
-  return file ? readCodexSessionFile(file) : null;
+  const metadata = readCodexSessionMetadata();
+  const file = findCodexSessionFile(sessionId, cwd, metadata);
+  return file ? readCodexSessionFile(file, metadata) : null;
 }
 
 export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary | null {
-  const sourceFile = findCodexSessionFile(sourceSessionId);
+  const metadata = readCodexSessionMetadata();
+  const sourceFile = findCodexSessionFile(sourceSessionId, null, metadata);
   if (!sourceFile) return null;
 
   const forkId = randomUUID();
@@ -49,7 +53,7 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   fs.mkdirSync(path.dirname(forkPath), { recursive: true });
   fs.writeFileSync(forkPath, `${forkedLines.join("\n")}\n`);
 
-  return readCodexSessionFile(forkPath);
+  return readCodexSessionFile(forkPath, metadata);
 }
 
 function codexSessionFiles(): string[] {
@@ -61,11 +65,15 @@ function codexSessionFiles(): string[] {
     .slice(0, MAX_SESSION_FILES);
 }
 
-function findCodexSessionFile(sessionId: string, cwd?: string | null): string | null {
+function findCodexSessionFile(
+  sessionId: string,
+  cwd?: string | null,
+  metadata = readCodexSessionMetadata(),
+): string | null {
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
   for (const file of codexSessionFiles()) {
     if (!path.basename(file).endsWith(`${sessionId}.jsonl`)) continue;
-    const session = readCodexSessionFile(file);
+    const session = readCodexSessionFile(file, metadata);
     if (session?.id === sessionId && (!cwd || session.cwd === cwd)) return file;
   }
   return null;
@@ -119,7 +127,110 @@ function collectJsonlFiles(dir: string, files: string[]) {
   }
 }
 
-function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
+interface CodexSessionMetadata {
+  title: string | null;
+  preview: string | null;
+  cwd: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  threadSource: string | null;
+}
+
+function readCodexSessionMetadata(): Map<string, CodexSessionMetadata> {
+  const metadata = readCodexSqliteMetadata();
+  for (const [id, threadName] of readCodexSessionIndex()) {
+    const existing = metadata.get(id);
+    metadata.set(id, {
+      title: codexDisplayText(threadName) ?? existing?.title ?? null,
+      preview: existing?.preview ?? null,
+      cwd: existing?.cwd ?? null,
+      createdAt: existing?.createdAt ?? null,
+      updatedAt: existing?.updatedAt ?? null,
+      threadSource: existing?.threadSource ?? null,
+    });
+  }
+  return metadata;
+}
+
+function readCodexSqliteMetadata(): Map<string, CodexSessionMetadata> {
+  const dbPath = codexStateDbPath();
+  const metadata = new Map<string, CodexSessionMetadata>();
+  if (!dbPath) return metadata;
+
+  let db: Database | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true });
+    const rows = db.query(`
+      SELECT id, title, preview, first_user_message, cwd, created_at_ms, updated_at_ms, created_at, updated_at, thread_source
+      FROM threads
+      WHERE archived = 0
+    `).all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const id = stringValue(row.id);
+      if (!id) continue;
+      const title = codexDisplayText(stringValue(row.title));
+      const preview = codexDisplayText(stringValue(row.preview)) ?? codexDisplayText(stringValue(row.first_user_message));
+      metadata.set(id, {
+        title,
+        preview,
+        cwd: stringValue(row.cwd),
+        createdAt: isoFromEpoch(row.created_at_ms, row.created_at),
+        updatedAt: isoFromEpoch(row.updated_at_ms, row.updated_at),
+        threadSource: stringValue(row.thread_source),
+      });
+    }
+  } catch {
+    return metadata;
+  } finally {
+    db?.close();
+  }
+  return metadata;
+}
+
+function readCodexSessionIndex(): Map<string, string> {
+  const indexPath = path.join(codexRoot(), "session_index.jsonl");
+  const entries = new Map<string, string>();
+  if (!fs.existsSync(indexPath)) return entries;
+
+  const lines = fs.readFileSync(indexPath, "utf8").split(/\r?\n/).filter(Boolean);
+  for (const line of lines) {
+    const entry = parseLine(line);
+    const id = stringValue(entry?.id);
+    const threadName = stringValue(entry?.thread_name);
+    if (id && threadName) entries.set(id, threadName);
+  }
+  return entries;
+}
+
+function codexStateDbPath(): string | null {
+  const root = codexRoot();
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(root);
+  } catch {
+    return null;
+  }
+  return entries
+    .filter((name) => /^state_\d+\.sqlite$/.test(name))
+    .map((name) => path.join(root, name))
+    .sort((a, b) => safeMtimeMs(b) - safeMtimeMs(a))[0] ?? null;
+}
+
+function codexRoot(): string {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
+function isoFromEpoch(epochMs: unknown, epochSeconds: unknown): string | null {
+  const ms = numberValue(epochMs);
+  if (ms) return new Date(ms).toISOString();
+  const seconds = numberValue(epochSeconds);
+  return seconds ? new Date(seconds * 1000).toISOString() : null;
+}
+
+function readCodexSessionFile(
+  filePath: string,
+  metadata = readCodexSessionMetadata(),
+): ClaudeSessionDetail | null {
   if (!fs.existsSync(filePath)) return null;
   const messages: ClaudeChatMessage[] = [];
   const toolBlocks = new Map<string, Extract<ClaudeChatMessageBlock, { type: "tool" }>>();
@@ -225,17 +336,19 @@ function readCodexSessionFile(filePath: string): ClaudeSessionDetail | null {
   }
   flushAssistant();
 
-  if (!id || !cwd || threadSource === "subagent") return null;
+  const indexed = metadata.get(id);
+  if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
   const previewMessage = [...messages].reverse().find((message) => message.role === "user") ?? messages[messages.length - 1];
   return {
     id,
     path: filePath,
     cwd,
-    created_at: createdAt,
-    updated_at: updatedAt,
+    title: indexed?.title ?? null,
+    created_at: createdAt ?? indexed?.createdAt ?? null,
+    updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messages.length,
     last_prompt: lastPrompt,
-    preview: previewText(lastPrompt || previewMessage?.content || null),
+    preview: previewText(lastPrompt || previewMessage?.content || indexed?.preview || null),
     messages,
   };
 }
@@ -257,6 +370,10 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function contentText(content: unknown): string {
@@ -297,6 +414,10 @@ function previewText(value: string | null): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function codexDisplayText(value: string | null): string | null {
+  return previewText(value ? stripWorkshopContext(value) : null);
 }
 
 function assistantBlocksText(blocks: ClaudeChatMessageBlock[]): string {
