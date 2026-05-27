@@ -17,7 +17,13 @@ import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContex
 import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
-import { ensureForkedCodexSessionTitle, forkCodexSession, getCodexSession, listCodexSessions } from "./codex-sessions";
+import {
+  ensureForkedCodexSessionTitle,
+  forkCodexSession,
+  getCodexSession,
+  listCodexSessions,
+  markForkedCodexSessionCompacted,
+} from "./codex-sessions";
 import { runClaudeCliChat } from "./claude-cli-chat";
 import { runCodexCliChat } from "./codex-cli-chat";
 import {
@@ -1161,6 +1167,21 @@ export async function createServer(port: number) {
     res.json(session);
   });
 
+  app.post("/api/agent/sessions/:id/fork", (req, res) => {
+    const workspace = activeWorkspaceOrError(res);
+    if (!workspace) return;
+    if (agentProvider !== "codex") {
+      res.status(400).json({ error: "Forking existing chats is only supported for Codex." });
+      return;
+    }
+    const fork = forkCodexSession(req.params.id);
+    if (!fork) {
+      res.status(404).json({ error: "Codex session to fork was not found." });
+      return;
+    }
+    res.json({ session: fork });
+  });
+
   app.post("/api/agent/messages", async (req, res) => {
     const { content, session_id, fork_session_id, run_id, client_message_id } = req.body ?? {};
     if (typeof content !== "string" || !content.trim()) {
@@ -1204,6 +1225,10 @@ export async function createServer(port: number) {
     } else if (requestProvider === "codex" && providerSessionId) {
       const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
       if (existing?.cwd) chatCwd = existing.cwd;
+      if (existing?.needs_compact) {
+        forkedCodexTitle = existing.title ?? null;
+        shouldCompactForkBeforeMessage = true;
+      }
     }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
@@ -1258,6 +1283,7 @@ export async function createServer(port: number) {
         }).finally(() => {
           clearTimeout(compactTimer);
           preserveForkTitle();
+          if (providerSessionId) markForkedCodexSessionCompacted(providerSessionId);
         });
         if (compactTimedOut) {
           broadcastStreamEvent({

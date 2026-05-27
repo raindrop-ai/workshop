@@ -23,7 +23,7 @@ export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
   return codexSessionFiles()
     .map((file) => readCodexSessionSummaryFile(file, metadata))
     .filter((session): session is ClaudeSessionSummary => {
-      if (!session || session.message_count === 0) return false;
+      if (!session || (session.message_count === 0 && !session.is_fork)) return false;
       return !cwd || session.cwd === cwd;
     })
     .sort((a, b) => (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0))
@@ -86,6 +86,16 @@ export function ensureForkedCodexSessionTitle(
   const title = storedForkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`, file);
   updateForkedCodexSessionLine(file, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);
+  return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
+}
+
+export function markForkedCodexSessionCompacted(sessionId: string): ClaudeSessionSummary | null {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return null;
+
+  const file = findCodexSessionFile(sessionId, null, readCodexSessionMetadata());
+  if (!file) return null;
+
+  updateForkedCodexCompactionFlag(file, sessionId, false);
   return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
 }
 
@@ -152,6 +162,7 @@ function forkCodexSessionLine(
     originator: "workshop_codex_fork",
     workshop_title: forkTitle,
     workshop_visible_after: now.toISOString(),
+    workshop_needs_compact: true,
   };
   return JSON.stringify(event);
 }
@@ -269,7 +280,12 @@ function writeForkedCodexSqliteMetadata(
   }
 }
 
-function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: string | null; parentId: string | null } | null {
+function readForkedCodexMetadata(filePath: string): {
+  isFork: boolean;
+  title: string | null;
+  parentId: string | null;
+  needsCompact: boolean;
+} | null {
   const line = firstSessionMetaLine(filePath);
   if (!line) return null;
 
@@ -283,6 +299,7 @@ function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: st
     isFork: stringValue(payload.originator) === "workshop_codex_fork" || !!parentId,
     title,
     parentId,
+    needsCompact: payload.workshop_needs_compact === true,
   };
 }
 
@@ -301,6 +318,24 @@ function updateForkedCodexSessionLine(filePath: string, sessionId: string, forkT
       workshop_title: forkTitle,
       originator: stringValue(payload.originator) ?? "workshop_codex_fork",
       workshop_visible_after: stringValue(payload.workshop_visible_after) ?? stringValue(payload.timestamp),
+    };
+    return JSON.stringify(event);
+  });
+  if (changed) fs.writeFileSync(filePath, updated.join("\n"));
+}
+
+function updateForkedCodexCompactionFlag(filePath: string, sessionId: string, needsCompact: boolean) {
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  let changed = false;
+  const updated = lines.map((line) => {
+    if (changed || !line.trim() || !isSessionMetaLine(line)) return line;
+    const event = parseLine(line);
+    const payload = objectValue(event?.payload);
+    if (!payload || stringValue(payload.id) !== sessionId) return line;
+    changed = true;
+    event!.payload = {
+      ...payload,
+      workshop_needs_compact: needsCompact,
     };
     return JSON.stringify(event);
   });
@@ -571,6 +606,7 @@ function readCodexSessionSummaryFile(
     is_fork: forkMetadata?.isFork ?? false,
     forked_from_id: forkMetadata?.parentId ?? null,
     fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
+    needs_compact: forkMetadata?.needsCompact ?? false,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -742,6 +778,7 @@ function readCodexSessionFile(
     is_fork: forkMetadata?.isFork ?? false,
     forked_from_id: forkMetadata?.parentId ?? null,
     fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
+    needs_compact: forkMetadata?.needsCompact ?? false,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,

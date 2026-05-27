@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Folder as FolderIcon, KeyRound, Plus, Send, Terminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Folder as FolderIcon, GitFork, KeyRound, Plus, Send, Terminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import claudeCodeLogo from "../assets/claude-code-logo.png";
 import codexLogo from "../assets/codex-logo.svg";
@@ -33,6 +33,7 @@ interface ClaudeSessionSummary {
   is_fork?: boolean;
   forked_from_id?: string | null;
   fork_depth?: number;
+  needs_compact?: boolean;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
@@ -163,6 +164,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const [sending, setSending] = useState(false);
   const [showList, setShowList] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [forkingSessionId, setForkingSessionId] = useState<string | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<ClaudeAskUserQuestion[]>([]);
   const [liveBlocks, setLiveBlocks] = useState<AssistantMessageBlock[]>([]);
   const [loadout, setLoadout] = useState<AgentLoadout | null>(null);
@@ -293,45 +295,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   const loadSession = useCallback(async (id: string) => {
     setError(null);
-    if (provider === "codex" && activeRunId) {
-      const summary = sessions.find((session) => session.id === id);
-      if (!summary) {
-        setError(`Could not load ${providerLabel(provider)} session.`);
-        return;
-      }
-      if (isCodexForkSession(summary)) {
-        const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`);
-        if (!res.ok) {
-          setError(`Could not load ${providerLabel(provider)} session.`);
-          return;
-        }
-        pendingQuestions.forEach((question) => {
-          if (question.session_id === id) hiddenPendingQuestionIdsRef.current.delete(question.id);
-        });
-        hiddenPendingSessionIdsRef.current.delete(id);
-        suppressPendingUntilNextSendRef.current = false;
-        setSelectedId(id);
-        setForkSourceId(null);
-        setDetail(await res.json());
-        setShowList(false);
-        return;
-      }
-      pendingQuestions.forEach((question) => {
-        if (question.session_id === id) hiddenPendingQuestionIdsRef.current.delete(question.id);
-      });
-      hiddenPendingSessionIdsRef.current.delete(id);
-      suppressPendingUntilNextSendRef.current = false;
-      setSelectedId(id);
-      setForkSourceId(id);
-      setDetail({
-        ...summary,
-        loaded_message_count: 0,
-        messages_truncated: false,
-        messages: [],
-      });
-      setShowList(false);
-      return;
-    }
     const url = provider === "codex"
       ? `/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`
       : `/api/agent/sessions/${encodeURIComponent(id)}`;
@@ -347,10 +310,40 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     suppressPendingUntilNextSendRef.current = false;
     setSelectedId(id);
     const loaded = await res.json();
-    setForkSourceId(provider === "codex" && activeRunId && !isCodexForkSession(loaded) ? id : null);
+    setForkSourceId(null);
     setDetail(loaded);
     setShowList(false);
-  }, [activeRunId, pendingQuestions, provider, sessions]);
+  }, [pendingQuestions, provider]);
+
+  const forkSession = useCallback(async (id: string) => {
+    if (provider !== "codex" || forkingSessionId) return;
+    setError(null);
+    setForkingSessionId(id);
+    try {
+      const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}/fork`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.session) {
+        throw new Error(body?.error ?? "Could not fork Codex chat.");
+      }
+      const session = body.session as ClaudeSessionSummary;
+      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setSelectedId(session.id);
+      setForkSourceId(null);
+      setDetail({
+        ...session,
+        loaded_message_count: 0,
+        messages_truncated: false,
+        messages: [],
+      });
+      setLiveBlocks([]);
+      setShowList(false);
+      void refreshSessions();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setForkingSessionId(null);
+    }
+  }, [forkingSessionId, provider, refreshSessions]);
 
   useEffect(() => {
     void refreshSessions();
@@ -438,10 +431,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const res = await fetch("/api/agent/provider");
       if (!res.ok) return;
       const body = await res.json().catch(() => null);
-      if (!cancelled && isAgentProvider(body?.provider)) setProvider(body.provider);
+      if (!cancelled && isAgentProvider(body?.provider)) {
+        setProvider(body.provider);
+        void refreshSessions();
+      }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshSessions]);
 
   useWorkshopEvent("agent_provider", (data: { provider?: string }) => {
     if (isAgentProvider(data.provider)) {
@@ -891,8 +887,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           providerBusy={switchingProvider}
           showProviderIntro={showProviderIntro}
           traceForkMode={codexTraceForkMode}
+          forkingSessionId={forkingSessionId}
           onProviderIntroChoice={chooseIntroProvider}
           onSelect={(id) => void loadSession(id)}
+          onFork={(id) => void forkSession(id)}
           onNew={startNewChat}
         />
       ) : (
@@ -1374,8 +1372,10 @@ function ChatList({
   providerBusy,
   showProviderIntro,
   traceForkMode,
+  forkingSessionId,
   onProviderIntroChoice,
   onSelect,
+  onFork,
   onNew,
 }: {
   sessions: ClaudeSessionSummary[];
@@ -1386,8 +1386,10 @@ function ChatList({
   providerBusy: boolean;
   showProviderIntro: boolean;
   traceForkMode: boolean;
+  forkingSessionId: string | null;
   onProviderIntroChoice: (provider: AgentProviderId) => void;
   onSelect: (id: string) => void;
+  onFork: (id: string) => void;
   onNew: () => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1480,7 +1482,7 @@ function ChatList({
           </button>
           {traceForkMode && (
             <div className="mb-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/65">
-              Pick a Codex chat to fork it for this trace. The original chat stays untouched.
+              Open a Codex chat to resume it, or fork it for this trace with the fork button.
             </div>
           )}
           <div className="space-y-1">
@@ -1495,7 +1497,9 @@ function ChatList({
                 provider={provider}
                 copied={copiedId === session.id}
                 forkMode={traceForkMode}
+                forking={forkingSessionId === session.id}
                 onSelect={onSelect}
+                onFork={onFork}
                 onCopy={copyResumeCommand}
               />
             ))}
@@ -1569,7 +1573,9 @@ function ChatListItem({
   provider,
   copied,
   forkMode,
+  forking,
   onSelect,
+  onFork,
   onCopy,
 }: {
   session: ClaudeSessionSummary;
@@ -1578,7 +1584,9 @@ function ChatListItem({
   provider: AgentProviderId;
   copied: boolean;
   forkMode: boolean;
+  forking: boolean;
   onSelect: (id: string) => void;
+  onFork: (id: string) => void;
   onCopy: (event: SyntheticEvent, session: ClaudeSessionSummary) => Promise<void>;
 }) {
   const cwd = session.cwd ?? workspaceCwd;
@@ -1620,6 +1628,25 @@ function ChatListItem({
       <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-white/30">
         <span>{selectedForkSource ? "fork source" : `${session.id.slice(0, 8)} · ${session.message_count} messages`}</span>
         <span className="h-3 w-px bg-white/10" />
+        {forkMode && provider === "codex" && (
+          <button
+            type="button"
+            title="Fork chat for this trace"
+            aria-label="Fork chat for this trace"
+            disabled={forking}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFork(session.id);
+            }}
+            className={`grid h-5 w-5 place-items-center rounded transition-colors focus:outline-none focus-visible:outline-none ${
+              forking
+                ? "cursor-wait text-cyan-200"
+                : "text-white/35 hover:text-white"
+            }`}
+          >
+            <GitFork className="h-3 w-3" />
+          </button>
+        )}
         <button
           type="button"
           title={`Copy ${resumeCommandForSession(session, workspaceCwd, provider)}`}
@@ -1645,17 +1672,35 @@ function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId):
 
 function displaySessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
   const title = sessionTitle(session, provider);
-  return provider === "codex" ? stripCodexForkPrefix(title) : title;
+  return provider === "codex" ? raindropCodexTitle(title) : title;
 }
 
 function displayCodexPreview(session: ClaudeSessionSummary, title: string): string | null {
   if (!session.preview) return null;
-  const preview = stripCodexForkPrefix(session.preview);
+  const preview = raindropCodexTitle(session.preview);
   return preview && preview !== title ? preview : null;
 }
 
-function stripCodexForkPrefix(value: string): string {
-  return value.replace(/^\[forked(?:\^\d+)?\]\s*/i, "").trim() || value;
+function raindropCodexTitle(value: string): string {
+  const parsed = parseCodexForkTitle(value);
+  return formatRaindropForkTitle(Math.max(0, parsed.depth - 1), parsed.base);
+}
+
+function parseCodexForkTitle(value: string): { depth: number; base: string } {
+  const cleaned = value.replace(/\s+/g, " ").trim() || "Untitled chat";
+  const match = cleaned.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
+  if (!match) return { depth: 0, base: cleaned };
+  const depth = match[1] ? Number.parseInt(match[1], 10) : 1;
+  return {
+    depth: Number.isFinite(depth) && depth > 0 ? depth : 1,
+    base: match[2]?.trim() || "Untitled chat",
+  };
+}
+
+function formatRaindropForkTitle(depth: number, base: string): string {
+  const cleanBase = base.replace(/\s+/g, " ").trim() || "Untitled chat";
+  if (depth <= 0) return cleanBase;
+  return depth === 1 ? `[forked] ${cleanBase}` : `[forked^${depth}] ${cleanBase}`;
 }
 
 function isCodexForkSession(session: ClaudeSessionSummary | null | undefined): boolean {
@@ -1678,7 +1723,7 @@ function raindropVisibleSessions(sessions: ClaudeSessionSummary[], provider: Age
   );
 
   return sessions
-    .filter((session) => !forkParentIds.has(session.id))
+    .filter((session) => isCodexForkSession(session) || !forkParentIds.has(session.id))
     .slice()
     .sort((a, b) => {
       const aFork = isCodexForkSession(a);

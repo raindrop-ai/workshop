@@ -19,6 +19,10 @@ export interface ClaudeChatMessage {
 export interface ClaudeSessionSummary {
   id: string;
   title?: string | null;
+  is_fork?: boolean;
+  forked_from_id?: string | null;
+  fork_depth?: number;
+  needs_compact?: boolean;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
