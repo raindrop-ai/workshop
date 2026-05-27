@@ -48,7 +48,8 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   const forkId = randomUUID();
   const now = new Date();
   const forkPath = codexSessionPath(now, forkId);
-  const forkTitle = nextForkedCodexTitle(source?.title ?? source?.preview ?? `Codex chat ${sourceSessionId.slice(0, 8)}`);
+  const sourceTitle = source?.title ?? source?.preview ?? `Codex chat ${sourceSessionId.slice(0, 8)}`;
+  const forkTitle = nextForkedCodexTitle(sourceTitle, sourceFile);
   let forkedCurrentSessionMeta = false;
   const forkedLines = fs
     .readFileSync(sourceFile, "utf8")
@@ -82,7 +83,7 @@ export function ensureForkedCodexSessionTitle(
     return readCodexSessionSummaryFile(file, metadata);
   }
 
-  const title = storedForkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`);
+  const title = storedForkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`, file);
   updateForkedCodexSessionLine(file, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);
   return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
@@ -107,6 +108,14 @@ function findCodexSessionFile(
     if (!path.basename(file).endsWith(`${sessionId}.jsonl`)) continue;
     const session = readCodexSessionSummaryFile(file, metadata);
     if (session?.id === sessionId && (!cwd || session.cwd === cwd)) return file;
+  }
+  return null;
+}
+
+function findCodexSessionFileById(sessionId: string): string | null {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return null;
+  for (const file of codexSessionFiles()) {
+    if (path.basename(file).endsWith(`${sessionId}.jsonl`)) return file;
   }
   return null;
 }
@@ -147,16 +156,16 @@ function forkCodexSessionLine(
   return JSON.stringify(event);
 }
 
-function nextForkedCodexTitle(title: string | null): string {
+function nextForkedCodexTitle(title: string | null, sourceFilePath: string): string {
   const cleaned = (title || "Untitled chat").replace(/\s+/g, " ").trim();
   const parsed = parseForkedTitle(cleaned);
-  return formatForkedTitle(parsed.depth + 1, parsed.base);
+  return formatForkedTitle(Math.max(parsed.depth, forkDepthForFile(sourceFilePath)) + 1, parsed.base);
 }
 
-function storedForkedCodexTitle(title: string | null): string {
+function storedForkedCodexTitle(title: string | null, filePath: string): string {
   const cleaned = (title || "Untitled chat").replace(/\s+/g, " ").trim();
   const parsed = parseForkedTitle(cleaned);
-  return formatForkedTitle(Math.max(1, parsed.depth), parsed.base);
+  return formatForkedTitle(Math.max(1, parsed.depth, forkDepthForFile(filePath)), parsed.base);
 }
 
 function parseForkedTitle(title: string): { depth: number; base: string } {
@@ -174,8 +183,14 @@ function formatForkedTitle(depth: number, base: string): string {
   return depth <= 1 ? `[forked] ${cleanBase}` : `[forked^${depth}] ${cleanBase}`;
 }
 
-function isForkedCodexTitle(title: string | null | undefined): boolean {
-  return !!title && /^\[forked(?:\^\d+)?\]\s+/i.test(title);
+function forkDepthForFile(filePath: string, seen = new Set<string>()): number {
+  const metadata = readForkedCodexMetadata(filePath);
+  if (!metadata?.isFork) return 0;
+  if (!metadata.parentId || seen.has(metadata.parentId)) return 1;
+
+  seen.add(metadata.parentId);
+  const parentFile = findCodexSessionFileById(metadata.parentId);
+  return parentFile ? 1 + forkDepthForFile(parentFile, seen) : 1;
 }
 
 function writeForkedCodexSqliteMetadata(
@@ -254,7 +269,7 @@ function writeForkedCodexSqliteMetadata(
   }
 }
 
-function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: string | null } | null {
+function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: string | null; parentId: string | null } | null {
   const line = firstSessionMetaLine(filePath);
   if (!line) return null;
 
@@ -263,9 +278,11 @@ function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: st
   if (!payload) return null;
 
   const title = stringValue(payload.workshop_title) ?? stringValue(payload.title);
+  const parentId = stringValue(payload.forked_from_id);
   return {
-    isFork: stringValue(payload.originator) === "workshop_codex_fork" || !!stringValue(payload.forked_from_id),
+    isFork: stringValue(payload.originator) === "workshop_codex_fork" || !!parentId,
     title,
+    parentId,
   };
 }
 
@@ -310,8 +327,31 @@ function updateCodexSqliteForkTitle(sessionId: string, forkTitle: string) {
 }
 
 function firstSessionMetaLine(filePath: string): string | null {
-  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
-  return lines.find((line) => isSessionMetaLine(line)) ?? null;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const chunks: string[] = [];
+    const buffer = Buffer.alloc(64 * 1024);
+    let bytesRead = 0;
+    let totalBytes = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead <= 0) break;
+      totalBytes += bytesRead;
+      chunks.push(buffer.subarray(0, bytesRead).toString("utf8"));
+      const text = chunks.join("");
+      const newline = text.indexOf("\n");
+      if (newline >= 0) {
+        const line = text.slice(0, newline).replace(/\r$/, "");
+        return isSessionMetaLine(line) ? line : null;
+      }
+    } while (totalBytes < 1024 * 1024);
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) fs.closeSync(fd);
+  }
+  return null;
 }
 
 function isSessionMetaLine(line: string): boolean {
@@ -520,8 +560,8 @@ function readCodexSessionSummaryFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
-  const title = codexSessionTitle(indexed?.title, fallbackTitle);
-  repairForkTitleIfNeeded(id, indexed?.title, title, fallbackTitle);
+  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle);
+  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle);
   return {
     id,
     path: filePath,
@@ -681,8 +721,8 @@ function readCodexSessionFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
-  const title = codexSessionTitle(indexed?.title, fallbackTitle);
-  repairForkTitleIfNeeded(id, indexed?.title, title, fallbackTitle);
+  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle);
+  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle);
   const previewSource =
     lastPrompt ||
     (lastUserMessage as ClaudeChatMessage | null)?.content ||
@@ -773,18 +813,27 @@ function previewText(value: string | null): string | null {
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
 }
 
-function codexSessionTitle(indexedTitle: string | null | undefined, fallbackTitle: string | null): string | null {
-  if (isForkedCodexTitle(fallbackTitle)) return fallbackTitle;
+function codexSessionTitle(
+  filePath: string,
+  indexedTitle: string | null | undefined,
+  fallbackTitle: string | null,
+): string | null {
+  if (readForkedCodexMetadata(filePath)?.isFork) {
+    return storedForkedCodexTitle(fallbackTitle ?? indexedTitle ?? null, filePath);
+  }
   return indexedTitle ?? fallbackTitle ?? null;
 }
 
 function repairForkTitleIfNeeded(
+  filePath: string,
   sessionId: string,
   indexedTitle: string | null | undefined,
   title: string | null,
   fallbackTitle: string | null,
 ) {
-  if (!title || !isForkedCodexTitle(fallbackTitle) || indexedTitle === title) return;
+  if (!title || !readForkedCodexMetadata(filePath)?.isFork) return;
+  if (indexedTitle === title && fallbackTitle === title) return;
+  updateForkedCodexSessionLine(filePath, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);
 }
 
