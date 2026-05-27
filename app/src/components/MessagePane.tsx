@@ -1607,7 +1607,12 @@ function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId):
 
 function forkedSessionTitle(title: string): string {
   const cleaned = title.replace(/\s+/g, " ").trim() || "Untitled chat";
-  return cleaned.startsWith("[forked] ") ? cleaned : `[forked] ${cleaned}`;
+  const match = cleaned.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
+  if (!match) return `[forked] ${cleaned}`;
+  const currentDepth = match[1] ? Number.parseInt(match[1], 10) : 1;
+  const nextDepth = Number.isFinite(currentDepth) && currentDepth > 0 ? currentDepth + 1 : 2;
+  const base = match[2]?.trim() || "Untitled chat";
+  return `[forked^${nextDepth}] ${base}`;
 }
 
 function ChatPreviewItem({

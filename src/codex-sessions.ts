@@ -48,7 +48,7 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   const forkId = randomUUID();
   const now = new Date();
   const forkPath = codexSessionPath(now, forkId);
-  const forkTitle = forkedCodexTitle(source?.title ?? source?.preview ?? `Codex chat ${sourceSessionId.slice(0, 8)}`);
+  const forkTitle = nextForkedCodexTitle(source?.title ?? source?.preview ?? `Codex chat ${sourceSessionId.slice(0, 8)}`);
   let forkedCurrentSessionMeta = false;
   const forkedLines = fs
     .readFileSync(sourceFile, "utf8")
@@ -82,7 +82,7 @@ export function ensureForkedCodexSessionTitle(
     return readCodexSessionSummaryFile(file, metadata);
   }
 
-  const title = forkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`);
+  const title = storedForkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`);
   updateForkedCodexSessionLine(file, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);
   return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
@@ -142,13 +142,40 @@ function forkCodexSessionLine(
     forked_from_id: sourceSessionId,
     originator: "workshop_codex_fork",
     workshop_title: forkTitle,
+    workshop_visible_after: now.toISOString(),
   };
   return JSON.stringify(event);
 }
 
-function forkedCodexTitle(title: string | null): string {
+function nextForkedCodexTitle(title: string | null): string {
   const cleaned = (title || "Untitled chat").replace(/\s+/g, " ").trim();
-  return cleaned.startsWith("[forked] ") ? cleaned : `[forked] ${cleaned}`;
+  const parsed = parseForkedTitle(cleaned);
+  return formatForkedTitle(parsed.depth + 1, parsed.base);
+}
+
+function storedForkedCodexTitle(title: string | null): string {
+  const cleaned = (title || "Untitled chat").replace(/\s+/g, " ").trim();
+  const parsed = parseForkedTitle(cleaned);
+  return formatForkedTitle(Math.max(1, parsed.depth), parsed.base);
+}
+
+function parseForkedTitle(title: string): { depth: number; base: string } {
+  const match = title.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
+  if (!match) return { depth: 0, base: title || "Untitled chat" };
+  const depth = match[1] ? Number.parseInt(match[1], 10) : 1;
+  return {
+    depth: Number.isFinite(depth) && depth > 0 ? depth : 1,
+    base: match[2]?.trim() || "Untitled chat",
+  };
+}
+
+function formatForkedTitle(depth: number, base: string): string {
+  const cleanBase = base.replace(/\s+/g, " ").trim() || "Untitled chat";
+  return depth <= 1 ? `[forked] ${cleanBase}` : `[forked^${depth}] ${cleanBase}`;
+}
+
+function isForkedCodexTitle(title: string | null | undefined): boolean {
+  return !!title && /^\[forked(?:\^\d+)?\]\s+/i.test(title);
 }
 
 function writeForkedCodexSqliteMetadata(
@@ -256,6 +283,7 @@ function updateForkedCodexSessionLine(filePath: string, sessionId: string, forkT
       title: forkTitle,
       workshop_title: forkTitle,
       originator: stringValue(payload.originator) ?? "workshop_codex_fork",
+      workshop_visible_after: stringValue(payload.workshop_visible_after) ?? stringValue(payload.timestamp),
     };
     return JSON.stringify(event);
   });
@@ -418,6 +446,7 @@ function readCodexSessionSummaryFile(
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
   let fallbackTitle: string | null = null;
+  let visibleAfterMs: number | null = null;
   let threadSource: string | null = null;
   let currentSessionMetaRead = false;
   let messageCount = 0;
@@ -429,10 +458,6 @@ function readCodexSessionSummaryFile(
     const event = parseLine(line);
     if (!event) continue;
     const timestamp = typeof event.timestamp === "string" ? event.timestamp : null;
-    if (timestamp) {
-      createdAt ??= timestamp;
-      updatedAt = timestamp;
-    }
 
     if (event.type === "session_meta") {
       if (!currentSessionMetaRead) {
@@ -441,9 +466,20 @@ function readCodexSessionSummaryFile(
         if (typeof payload?.cwd === "string") cwd = payload.cwd;
         if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
         fallbackTitle = stringValue(payload?.workshop_title) ?? stringValue(payload?.title);
+        visibleAfterMs = forkVisibleAfterMs(payload, timestamp);
+        if (timestamp) {
+          createdAt ??= timestamp;
+          updatedAt = timestamp;
+        }
         currentSessionMetaRead = true;
       }
       continue;
+    }
+
+    if (isBeforeVisibleForkWindow(timestamp, visibleAfterMs)) continue;
+    if (timestamp) {
+      createdAt ??= timestamp;
+      updatedAt = timestamp;
     }
 
     if (event.type !== "response_item") continue;
@@ -515,6 +551,7 @@ function readCodexSessionFile(
   let updatedAt: string | null = null;
   let lastPrompt: string | null = null;
   let fallbackTitle: string | null = null;
+  let visibleAfterMs: number | null = null;
   let threadSource: string | null = null;
   let currentSessionMetaRead = false;
   let assistantBlocks: ClaudeChatMessageBlock[] = [];
@@ -555,10 +592,6 @@ function readCodexSessionFile(
     const event = parseLine(line);
     if (!event) continue;
     const timestamp = typeof event.timestamp === "string" ? event.timestamp : null;
-    if (timestamp) {
-      createdAt ??= timestamp;
-      updatedAt = timestamp;
-    }
 
     if (event.type === "session_meta") {
       if (!currentSessionMetaRead) {
@@ -567,9 +600,20 @@ function readCodexSessionFile(
         if (typeof payload?.cwd === "string") cwd = payload.cwd;
         if (typeof payload?.thread_source === "string") threadSource = payload.thread_source;
         fallbackTitle = stringValue(payload?.workshop_title) ?? stringValue(payload?.title);
+        visibleAfterMs = forkVisibleAfterMs(payload, timestamp);
+        if (timestamp) {
+          createdAt ??= timestamp;
+          updatedAt = timestamp;
+        }
         currentSessionMetaRead = true;
       }
       continue;
+    }
+
+    if (isBeforeVisibleForkWindow(timestamp, visibleAfterMs)) continue;
+    if (timestamp) {
+      createdAt ??= timestamp;
+      updatedAt = timestamp;
     }
 
     if (event.type !== "response_item") continue;
@@ -730,7 +774,7 @@ function previewText(value: string | null): string | null {
 }
 
 function codexSessionTitle(indexedTitle: string | null | undefined, fallbackTitle: string | null): string | null {
-  if (fallbackTitle?.startsWith("[forked] ")) return fallbackTitle;
+  if (isForkedCodexTitle(fallbackTitle)) return fallbackTitle;
   return indexedTitle ?? fallbackTitle ?? null;
 }
 
@@ -740,8 +784,27 @@ function repairForkTitleIfNeeded(
   title: string | null,
   fallbackTitle: string | null,
 ) {
-  if (!title || !fallbackTitle?.startsWith("[forked] ") || indexedTitle === title) return;
+  if (!title || !isForkedCodexTitle(fallbackTitle) || indexedTitle === title) return;
   updateCodexSqliteForkTitle(sessionId, title);
+}
+
+function forkVisibleAfterMs(payload: Record<string, unknown> | null, eventTimestamp: string | null): number | null {
+  if (!payload) return null;
+  const isFork = stringValue(payload.originator) === "workshop_codex_fork" || !!stringValue(payload.forked_from_id);
+  if (!isFork) return null;
+  return timestampMs(stringValue(payload.workshop_visible_after) ?? stringValue(payload.timestamp) ?? eventTimestamp);
+}
+
+function isBeforeVisibleForkWindow(timestamp: string | null, visibleAfterMs: number | null): boolean {
+  if (visibleAfterMs == null) return false;
+  const ms = timestampMs(timestamp);
+  return ms != null && ms < visibleAfterMs;
+}
+
+function timestampMs(timestamp: string | null): number | null {
+  if (!timestamp) return null;
+  const ms = Date.parse(timestamp);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function codexDisplayText(value: string | null): string | null {
