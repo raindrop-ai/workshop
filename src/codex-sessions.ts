@@ -560,13 +560,17 @@ function readCodexSessionSummaryFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
-  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle);
-  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle);
+  const forkMetadata = readForkedCodexMetadata(filePath);
+  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle, forkMetadata);
+  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle, forkMetadata);
   return {
     id,
     path: filePath,
     cwd,
     title,
+    is_fork: forkMetadata?.isFork ?? false,
+    forked_from_id: forkMetadata?.parentId ?? null,
+    fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -721,8 +725,9 @@ function readCodexSessionFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
-  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle);
-  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle);
+  const forkMetadata = readForkedCodexMetadata(filePath);
+  const title = codexSessionTitle(filePath, indexed?.title, fallbackTitle, forkMetadata);
+  repairForkTitleIfNeeded(filePath, id, indexed?.title, title, fallbackTitle, forkMetadata);
   const previewSource =
     lastPrompt ||
     (lastUserMessage as ClaudeChatMessage | null)?.content ||
@@ -734,6 +739,9 @@ function readCodexSessionFile(
     path: filePath,
     cwd,
     title,
+    is_fork: forkMetadata?.isFork ?? false,
+    forked_from_id: forkMetadata?.parentId ?? null,
+    fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -817,8 +825,9 @@ function codexSessionTitle(
   filePath: string,
   indexedTitle: string | null | undefined,
   fallbackTitle: string | null,
+  forkMetadata = readForkedCodexMetadata(filePath),
 ): string | null {
-  if (readForkedCodexMetadata(filePath)?.isFork) {
+  if (forkMetadata?.isFork) {
     return storedForkedCodexTitle(fallbackTitle ?? indexedTitle ?? null, filePath);
   }
   return indexedTitle ?? fallbackTitle ?? null;
@@ -830,8 +839,9 @@ function repairForkTitleIfNeeded(
   indexedTitle: string | null | undefined,
   title: string | null,
   fallbackTitle: string | null,
+  forkMetadata = readForkedCodexMetadata(filePath),
 ) {
-  if (!title || !readForkedCodexMetadata(filePath)?.isFork) return;
+  if (!title || !forkMetadata?.isFork) return;
   if (indexedTitle === title && fallbackTitle === title) return;
   updateForkedCodexSessionLine(filePath, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);

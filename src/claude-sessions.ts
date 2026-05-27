@@ -23,6 +23,9 @@ export interface ClaudeSessionSummary {
   path: string;
   cwd: string;
   title?: string | null;
+  is_fork?: boolean;
+  forked_from_id?: string | null;
+  fork_depth?: number;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;

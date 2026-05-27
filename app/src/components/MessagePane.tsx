@@ -30,6 +30,9 @@ type ClaudeChatMessageBlock =
 interface ClaudeSessionSummary {
   id: string;
   title?: string | null;
+  is_fork?: boolean;
+  forked_from_id?: string | null;
+  fork_depth?: number;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
@@ -296,6 +299,23 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         setError(`Could not load ${providerLabel(provider)} session.`);
         return;
       }
+      if (isCodexForkSession(summary)) {
+        const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`);
+        if (!res.ok) {
+          setError(`Could not load ${providerLabel(provider)} session.`);
+          return;
+        }
+        pendingQuestions.forEach((question) => {
+          if (question.session_id === id) hiddenPendingQuestionIdsRef.current.delete(question.id);
+        });
+        hiddenPendingSessionIdsRef.current.delete(id);
+        suppressPendingUntilNextSendRef.current = false;
+        setSelectedId(id);
+        setForkSourceId(null);
+        setDetail(await res.json());
+        setShowList(false);
+        return;
+      }
       pendingQuestions.forEach((question) => {
         if (question.session_id === id) hiddenPendingQuestionIdsRef.current.delete(question.id);
       });
@@ -326,8 +346,9 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     hiddenPendingSessionIdsRef.current.delete(id);
     suppressPendingUntilNextSendRef.current = false;
     setSelectedId(id);
-    setForkSourceId(provider === "codex" && activeRunId ? id : null);
-    setDetail(await res.json());
+    const loaded = await res.json();
+    setForkSourceId(provider === "codex" && activeRunId && !isCodexForkSession(loaded) ? id : null);
+    setDetail(loaded);
     setShowList(false);
   }, [activeRunId, pendingQuestions, provider, sessions]);
 
@@ -494,7 +515,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     if (typeof commandResult === "string") content = commandResult;
     suppressPendingUntilNextSendRef.current = false;
     const clientMessageId = `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const shouldForkCodexSession = provider === "codex" && !!activeRunId && !!forkSourceId && selectedId === forkSourceId;
+    const selectedSession = detail ?? sessions.find((session) => session.id === selectedId) ?? null;
+    const shouldForkCodexSession =
+      provider === "codex" &&
+      !!activeRunId &&
+      !!forkSourceId &&
+      selectedId === forkSourceId &&
+      !isCodexForkSession(selectedSession);
     activeClientMessageIdRef.current = clientMessageId;
     liveBlocksRef.current = [];
     setLiveBlocks([]);
@@ -686,12 +713,16 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const visibleLiveBlocks = visibleAssistantBlocks(liveBlocks);
   const showTraceDebugPrompt = !!activeRunId && messages.length === 0 && !sending && visibleLiveBlocks.length === 0;
   const codexTraceForkMode = provider === "codex" && !!activeRunId;
-  const forkingFromSelectedChat = codexTraceForkMode && !!forkSourceId && selectedId === forkSourceId;
+  const forkingFromSelectedChat =
+    codexTraceForkMode &&
+    !!forkSourceId &&
+    selectedId === forkSourceId &&
+    !isCodexForkSession(detail ?? sessions.find((session) => session.id === selectedId) ?? null);
   const slashItems = useMemo(() => buildSlashItems(loadout, draft, provider), [loadout, draft, provider]);
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
   const currentCwd = detail?.cwd ?? workspaceCwd;
   const currentCwdDisplay = formatCwdDisplay(currentCwd);
-  const currentSessionTitle = detail ? sessionTitle(detail, provider) : "New chat";
+  const currentSessionTitle = detail ? displaySessionTitle(detail, provider) : "New chat";
 
   useEffect(() => {
     setActiveSlashIndex((index) => Math.min(index, Math.max(0, slashItems.length - 1)));
@@ -1362,6 +1393,11 @@ function ChatList({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [introProvider, setIntroProvider] = useState<AgentProviderId>(provider);
   const [introSessions, setIntroSessions] = useState<ClaudeSessionSummary[]>(sessions);
+  const visibleSessions = useMemo(() => raindropVisibleSessions(sessions, provider), [sessions, provider]);
+  const visibleIntroSessions = useMemo(
+    () => raindropVisibleSessions(introSessions, introProvider),
+    [introProvider, introSessions],
+  );
 
   useEffect(() => {
     if (showProviderIntro) setIntroProvider(provider);
@@ -1417,13 +1453,14 @@ function ChatList({
               Your Recent {providerLabel(introProvider)} Chats
             </div>
             <div className="space-y-1.5 opacity-60">
-              {introSessions.length === 0 ? (
+              {visibleIntroSessions.length === 0 ? (
                 <div className="flex h-[150px] items-center justify-center text-xs text-white/35">No chats yet.</div>
-              ) : introSessions.slice(0, 4).map((session) => (
+              ) : visibleIntroSessions.slice(0, 4).map((session) => (
                 <ChatPreviewItem
                   key={session.id}
                   session={session}
                   workspaceCwd={workspaceCwd}
+                  provider={introProvider}
                 />
               ))}
             </div>
@@ -1447,9 +1484,9 @@ function ChatList({
             </div>
           )}
           <div className="space-y-1">
-            {sessions.length === 0 ? (
+            {visibleSessions.length === 0 ? (
               <div className="px-3 py-8 text-center text-xs text-white/40">No {providerLabel(provider)} chats yet.</div>
-            ) : sessions.map((session) => (
+            ) : visibleSessions.map((session) => (
               <ChatListItem
                 key={session.id}
                 session={session}
@@ -1546,8 +1583,9 @@ function ChatListItem({
 }) {
   const cwd = session.cwd ?? workspaceCwd;
   const cwdDisplay = formatCwdDisplay(cwd);
-  const title = sessionTitle(session, provider);
-  const preview = provider === "codex" && session.preview && session.preview !== title ? session.preview : null;
+  const title = displaySessionTitle(session, provider);
+  const preview = provider === "codex" ? displayCodexPreview(session, title) : null;
+  const selectedForkSource = forkMode && selected && !isCodexForkSession(session);
   return (
     <div
       role="button"
@@ -1580,7 +1618,7 @@ function ChatListItem({
         </span>
       </div>
       <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-white/30">
-        <span>{forkMode && selected ? "fork source" : `${session.id.slice(0, 8)} · ${session.message_count} messages`}</span>
+        <span>{selectedForkSource ? "fork source" : `${session.id.slice(0, 8)} · ${session.message_count} messages`}</span>
         <span className="h-3 w-px bg-white/10" />
         <button
           type="button"
@@ -1605,6 +1643,51 @@ function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId):
   return session.title || session.preview || "Untitled chat";
 }
 
+function displaySessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
+  const title = sessionTitle(session, provider);
+  return provider === "codex" ? stripCodexForkPrefix(title) : title;
+}
+
+function displayCodexPreview(session: ClaudeSessionSummary, title: string): string | null {
+  if (!session.preview) return null;
+  const preview = stripCodexForkPrefix(session.preview);
+  return preview && preview !== title ? preview : null;
+}
+
+function stripCodexForkPrefix(value: string): string {
+  return value.replace(/^\[forked(?:\^\d+)?\]\s*/i, "").trim() || value;
+}
+
+function isCodexForkSession(session: ClaudeSessionSummary | null | undefined): boolean {
+  if (!session) return false;
+  return Boolean(
+    session.is_fork ||
+    session.forked_from_id ||
+    (session.fork_depth ?? 0) > 0 ||
+    /^\[forked(?:\^\d+)?\]\s*/i.test(session.title ?? ""),
+  );
+}
+
+function raindropVisibleSessions(sessions: ClaudeSessionSummary[], provider: AgentProviderId): ClaudeSessionSummary[] {
+  if (provider !== "codex") return sessions;
+
+  const forkParentIds = new Set(
+    sessions
+      .map((session) => isCodexForkSession(session) ? session.forked_from_id : null)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  return sessions
+    .filter((session) => !forkParentIds.has(session.id))
+    .slice()
+    .sort((a, b) => {
+      const aFork = isCodexForkSession(a);
+      const bFork = isCodexForkSession(b);
+      if (aFork !== bFork) return aFork ? -1 : 1;
+      return (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0);
+    });
+}
+
 function forkedSessionTitle(title: string): string {
   const cleaned = title.replace(/\s+/g, " ").trim() || "Untitled chat";
   const match = cleaned.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
@@ -1618,15 +1701,18 @@ function forkedSessionTitle(title: string): string {
 function ChatPreviewItem({
   session,
   workspaceCwd,
+  provider,
 }: {
   session: ClaudeSessionSummary;
   workspaceCwd: string | null;
+  provider: AgentProviderId;
 }) {
   const cwd = formatCwdDisplay(session.cwd ?? workspaceCwd);
+  const title = displaySessionTitle(session, provider);
   return (
     <div className="px-1 py-1">
       <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1 truncate text-xs text-white/70">{session.preview || "Untitled chat"}</div>
+        <div className="min-w-0 flex-1 truncate text-xs text-white/70">{title}</div>
         <div className="shrink-0 text-[10px] text-white/35">{formatSessionTime(session.updated_at)}</div>
       </div>
       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/30">
