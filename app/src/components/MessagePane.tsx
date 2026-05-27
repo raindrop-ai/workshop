@@ -6,94 +6,26 @@ import { useWorkshopEvent } from "../hooks/use-workshop-ws";
 import { router } from "../router";
 import { runPath } from "../utils/navigation";
 import { isAgentProvider, providerLabel, type AgentProviderId } from "../utils/agent-provider";
+import type {
+  AgentLoadout,
+  AgentStreamEvent,
+  ClaudeAskUserQuestion,
+  ClaudeChatMessage,
+  ClaudeChatMessageBlock,
+  ClaudeMessageStream,
+  ClaudeSessionDetail,
+  ClaudeSessionSummary,
+} from "../api/chat";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import { Markdown } from "./Markdown";
 import { RaindropLogo } from "./RaindropLogo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-
-type Role = "user" | "assistant";
-
-interface ClaudeChatMessage {
-  id: string;
-  role: Role;
-  content: string;
-  blocks?: ClaudeChatMessageBlock[];
-  timestamp: string | null;
-  error?: string;
-}
-
-type ClaudeChatMessageBlock =
-  | { type: "text"; text: string }
-  | { type: "tool"; id: string; name: string; input_preview?: string; output_preview?: string; ok?: boolean }
-  | { type: "thinking"; text: string };
-
-interface ClaudeSessionSummary {
-  id: string;
-  title?: string | null;
-  is_fork?: boolean;
-  forked_from_id?: string | null;
-  fork_depth?: number;
-  needs_compact?: boolean;
-  created_at: string | null;
-  updated_at: string | null;
-  message_count: number;
-  loaded_message_count?: number;
-  messages_truncated?: boolean;
-  last_prompt: string | null;
-  preview: string | null;
-  cwd?: string;
-}
-
-interface ClaudeSessionDetail extends ClaudeSessionSummary {
-  messages: ClaudeChatMessage[];
-}
 
 type AssistantMessageBlock =
   | { type: "text"; text: string }
   | { type: "tool"; id: string; name: string; input_preview?: string; output_preview?: string; ok?: boolean; state: "running" | "done" }
   | { type: "thinking"; text: string }
   | { type: "error"; text: string };
-
-interface ClaudeAskUserQuestion {
-  id: string;
-  session_id: string;
-  tool_use_id: string;
-  questions: ClaudeAskQuestion[];
-  created_at: string;
-}
-
-interface ClaudeAskQuestion {
-  question: string;
-  header?: string;
-  multiSelect: boolean;
-  options: Array<{ label: string; description?: string }>;
-}
-
-interface ClaudeMessageStream {
-  client_message_id?: string;
-  session_id?: string | null;
-  event?: AgentStreamEvent;
-}
-
-type AgentStreamEvent =
-  | { type: "text"; content: string }
-  | ({ type: "loadout" } & AgentLoadout)
-  | { type: "error"; content: string }
-  | { type: "tool_start"; id: string; name: string; input_preview?: string }
-  | { type: "tool_finish"; id: string; ok: boolean; output_preview?: string }
-  | { type: "thinking_delta"; content: string }
-  | { type: "subagent_start"; parent_id: string; subagent: string }
-  | { type: "provider_session"; sessionId: string }
-  | { type: "done" };
-
-interface AgentLoadout {
-  tools?: string[];
-  mcps?: string[];
-  skills?: string[];
-  plugins?: string[];
-  slash_commands?: string[];
-  model?: string;
-}
 
 interface SlashItem {
   label: string;
