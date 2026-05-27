@@ -158,7 +158,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const [width, setWidth] = useState<number>(loadWidth);
   const [sessions, setSessions] = useState<ClaudeSessionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [forkSourceId, setForkSourceId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ClaudeSessionDetail | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -190,7 +189,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const hiddenPendingSessionIdsRef = useRef<Set<string>>(new Set());
   const suppressPendingUntilNextSendRef = useRef(false);
 
-  function setCollapsed(v: boolean) {
+  const setCollapsed = useCallback((v: boolean) => {
     setCollapsePreview(false);
     setSpringClosing(false);
     if (collapseHoldTimerRef.current) {
@@ -203,9 +202,9 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     }
     setCollapsedState(v);
     saveCollapsed(v);
-  }
+  }, []);
 
-  function springCloseFromResize() {
+  const springCloseFromResize = useCallback(() => {
     if (springClosing || springCloseTimerRef.current) return;
     resizeRef.current = null;
     if (collapseHoldTimerRef.current) {
@@ -219,7 +218,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       springCloseTimerRef.current = null;
       setCollapsed(true);
     }, COLLAPSE_SPRING_MS);
-  }
+  }, [setCollapsed, springClosing]);
 
   function dismissProviderIntro() {
     setShowProviderIntro(false);
@@ -286,7 +285,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("resize", onResize);
     };
-  }, []);
+  }, [springCloseFromResize]);
 
   const refreshSessions = useCallback(async () => {
     const res = await fetch("/api/agent/sessions");
@@ -310,7 +309,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     suppressPendingUntilNextSendRef.current = false;
     setSelectedId(id);
     const loaded = await res.json();
-    setForkSourceId(null);
     setDetail(loaded);
     setShowList(false);
   }, [pendingQuestions, provider]);
@@ -328,7 +326,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const session = body.session as ClaudeSessionSummary;
       setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
       setSelectedId(session.id);
-      setForkSourceId(null);
       setDetail({
         ...session,
         loaded_message_count: 0,
@@ -364,7 +361,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       window.removeEventListener("workshop:open-message-pane", openPane);
       window.removeEventListener("workshop:messagePane:resetOnboarding", resetOnboarding);
     };
-  }, []);
+  }, [setCollapsed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -401,10 +398,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   useEffect(() => {
     if (!draft.startsWith("/")) setShowSlash(false);
   }, [draft]);
-
-  useEffect(() => {
-    if (provider !== "codex" || !activeRunId) setForkSourceId(null);
-  }, [activeRunId, provider]);
 
   useEffect(() => {
     if (provider !== "codex") return;
@@ -485,7 +478,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     if (!data?.client_message_id || data.client_message_id !== activeClientMessageIdRef.current) return;
     if (data.session_id) {
       setSelectedId(data.session_id);
-      setForkSourceId((current) => data.session_id === current ? current : null);
     }
     const event = data.event;
     if (!event) return;
@@ -511,13 +503,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     if (typeof commandResult === "string") content = commandResult;
     suppressPendingUntilNextSendRef.current = false;
     const clientMessageId = `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const selectedSession = detail ?? sessions.find((session) => session.id === selectedId) ?? null;
-    const shouldForkCodexSession =
-      provider === "codex" &&
-      !!activeRunId &&
-      !!forkSourceId &&
-      selectedId === forkSourceId &&
-      !isCodexForkSession(selectedSession);
     activeClientMessageIdRef.current = clientMessageId;
     liveBlocksRef.current = [];
     setLiveBlocks([]);
@@ -533,7 +518,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       setDetail((current) => current
         ? {
           ...current,
-          title: shouldForkCodexSession ? forkedSessionTitle(sessionTitle(current, provider)) : current.title,
           messages: [...current.messages, optimistic],
         }
         : {
@@ -541,7 +525,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           created_at: optimistic.timestamp,
           updated_at: optimistic.timestamp,
           message_count: 1,
-          title: shouldForkCodexSession ? "[forked] New chat" : null,
+          title: null,
           last_prompt: content,
           preview: content,
           messages: [optimistic],
@@ -554,8 +538,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           content,
-          session_id: shouldForkCodexSession ? null : selectedId,
-          fork_session_id: shouldForkCodexSession ? forkSourceId : null,
+          session_id: selectedId,
           run_id: activeRunId ?? null,
           client_message_id: clientMessageId,
         }),
@@ -565,7 +548,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       if (!res.ok) throw new Error(body?.error ?? `${providerLabel(provider)} request failed (${res.status})`);
       if (body?.session_id) {
         setSelectedId(body.session_id);
-        setForkSourceId(null);
       }
       if (body?.session) {
         const capturedBlocks = liveBlocksRef.current.length
@@ -604,7 +586,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     activeClientMessageIdRef.current = null;
     liveBlocksRef.current = [];
     setSelectedId(null);
-    setForkSourceId(null);
     setDetail(null);
     setLiveBlocks([]);
     setSending(false);
@@ -709,11 +690,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const visibleLiveBlocks = visibleAssistantBlocks(liveBlocks);
   const showTraceDebugPrompt = !!activeRunId && messages.length === 0 && !sending && visibleLiveBlocks.length === 0;
   const codexTraceForkMode = provider === "codex" && !!activeRunId;
-  const forkingFromSelectedChat =
-    codexTraceForkMode &&
-    !!forkSourceId &&
-    selectedId === forkSourceId &&
-    !isCodexForkSession(detail ?? sessions.find((session) => session.id === selectedId) ?? null);
   const slashItems = useMemo(() => buildSlashItems(loadout, draft, provider), [loadout, draft, provider]);
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
   const currentCwd = detail?.cwd ?? workspaceCwd;
@@ -896,7 +872,6 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       ) : (
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={scrollRef} className={`flex-1 overflow-y-auto px-3 pt-3 ${showTraceDebugPrompt ? "pb-44" : "pb-36"} space-y-3 text-sm`}>
-            {forkingFromSelectedChat && <CodexForkNotice />}
             {detail?.messages_truncated && (
               <ChatTruncationNotice
                 loaded={detail.loaded_message_count ?? messages.length}
@@ -1593,7 +1568,6 @@ function ChatListItem({
   const cwdDisplay = formatCwdDisplay(cwd);
   const title = displaySessionTitle(session, provider);
   const preview = provider === "codex" ? displayCodexPreview(session, title) : null;
-  const selectedForkSource = forkMode && selected && !isCodexForkSession(session);
   return (
     <div
       role="button"
@@ -1626,7 +1600,7 @@ function ChatListItem({
         </span>
       </div>
       <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-white/30">
-        <span>{selectedForkSource ? "fork source" : `${session.id.slice(0, 8)} · ${session.message_count} messages`}</span>
+        <span>{session.id.slice(0, 8)} · {session.message_count} messages</span>
         <span className="h-3 w-px bg-white/10" />
         {forkMode && provider === "codex" && (
           <button
@@ -1733,16 +1707,6 @@ function raindropVisibleSessions(sessions: ClaudeSessionSummary[], provider: Age
     });
 }
 
-function forkedSessionTitle(title: string): string {
-  const cleaned = title.replace(/\s+/g, " ").trim() || "Untitled chat";
-  const match = cleaned.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
-  if (!match) return `[forked] ${cleaned}`;
-  const currentDepth = match[1] ? Number.parseInt(match[1], 10) : 1;
-  const nextDepth = Number.isFinite(currentDepth) && currentDepth > 0 ? currentDepth + 1 : 2;
-  const base = match[2]?.trim() || "Untitled chat";
-  return `[forked^${nextDepth}] ${base}`;
-}
-
 function ChatPreviewItem({
   session,
   workspaceCwd,
@@ -1812,14 +1776,6 @@ function TraceDebugPrompt({ onPrompt }: { onPrompt: (prompt: string) => void }) 
           {prompt}
         </button>
       ))}
-    </div>
-  );
-}
-
-function CodexForkNotice() {
-  return (
-    <div className="rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/70">
-      This Codex chat will be forked when you send. The fork gets this trace attached, and the original chat stays untouched.
     </div>
   );
 }

@@ -18,6 +18,13 @@ interface CodexSessionReadOptions {
   messageLimit?: number;
 }
 
+interface CodexForkMetadata {
+  isFork: boolean;
+  title: string | null;
+  parentId: string | null;
+  needsCompact: boolean;
+}
+
 export function listCodexSessions(cwd?: string | null): ClaudeSessionSummary[] {
   const metadata = readCodexSessionMetadata();
   return codexSessionFiles()
@@ -92,11 +99,12 @@ export function ensureForkedCodexSessionTitle(
 export function markForkedCodexSessionCompacted(sessionId: string): ClaudeSessionSummary | null {
   if (!SESSION_ID_PATTERN.test(sessionId)) return null;
 
-  const file = findCodexSessionFile(sessionId, null, readCodexSessionMetadata());
+  const metadata = readCodexSessionMetadata();
+  const file = findCodexSessionFile(sessionId, null, metadata);
   if (!file) return null;
 
   updateForkedCodexCompactionFlag(file, sessionId, false);
-  return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
+  return readCodexSessionSummaryFile(file, metadata);
 }
 
 function codexSessionFiles(): string[] {
@@ -280,12 +288,7 @@ function writeForkedCodexSqliteMetadata(
   }
 }
 
-function readForkedCodexMetadata(filePath: string): {
-  isFork: boolean;
-  title: string | null;
-  parentId: string | null;
-  needsCompact: boolean;
-} | null {
+function readForkedCodexMetadata(filePath: string): CodexForkMetadata | null {
   const line = firstSessionMetaLine(filePath);
   if (!line) return null;
 
@@ -304,27 +307,27 @@ function readForkedCodexMetadata(filePath: string): {
 }
 
 function updateForkedCodexSessionLine(filePath: string, sessionId: string, forkTitle: string) {
-  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
-  let changed = false;
-  const updated = lines.map((line) => {
-    if (changed || !line.trim() || !isSessionMetaLine(line)) return line;
-    const event = parseLine(line);
-    const payload = objectValue(event?.payload);
-    if (!payload || stringValue(payload.id) !== sessionId) return line;
-    changed = true;
-    event!.payload = {
-      ...payload,
-      title: forkTitle,
-      workshop_title: forkTitle,
-      originator: stringValue(payload.originator) ?? "workshop_codex_fork",
-      workshop_visible_after: stringValue(payload.workshop_visible_after) ?? stringValue(payload.timestamp),
-    };
-    return JSON.stringify(event);
-  });
-  if (changed) fs.writeFileSync(filePath, updated.join("\n"));
+  updateCodexSessionMetaLine(filePath, sessionId, (payload) => ({
+    ...payload,
+    title: forkTitle,
+    workshop_title: forkTitle,
+    originator: stringValue(payload.originator) ?? "workshop_codex_fork",
+    workshop_visible_after: stringValue(payload.workshop_visible_after) ?? stringValue(payload.timestamp),
+  }));
 }
 
 function updateForkedCodexCompactionFlag(filePath: string, sessionId: string, needsCompact: boolean) {
+  updateCodexSessionMetaLine(filePath, sessionId, (payload) => ({
+    ...payload,
+    workshop_needs_compact: needsCompact,
+  }));
+}
+
+function updateCodexSessionMetaLine(
+  filePath: string,
+  sessionId: string,
+  updatePayload: (payload: Record<string, unknown>) => Record<string, unknown>,
+) {
   const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
   let changed = false;
   const updated = lines.map((line) => {
@@ -333,10 +336,7 @@ function updateForkedCodexCompactionFlag(filePath: string, sessionId: string, ne
     const payload = objectValue(event?.payload);
     if (!payload || stringValue(payload.id) !== sessionId) return line;
     changed = true;
-    event!.payload = {
-      ...payload,
-      workshop_needs_compact: needsCompact,
-    };
+    event!.payload = updatePayload(payload);
     return JSON.stringify(event);
   });
   if (changed) fs.writeFileSync(filePath, updated.join("\n"));
@@ -605,7 +605,7 @@ function readCodexSessionSummaryFile(
     title,
     is_fork: forkMetadata?.isFork ?? false,
     forked_from_id: forkMetadata?.parentId ?? null,
-    fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
+    fork_depth: codexForkDepth(forkMetadata, title),
     needs_compact: forkMetadata?.needsCompact ?? false,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
@@ -777,7 +777,7 @@ function readCodexSessionFile(
     title,
     is_fork: forkMetadata?.isFork ?? false,
     forked_from_id: forkMetadata?.parentId ?? null,
-    fork_depth: forkMetadata?.isFork ? parseForkedTitle(title ?? "").depth || 1 : 0,
+    fork_depth: codexForkDepth(forkMetadata, title),
     needs_compact: forkMetadata?.needsCompact ?? false,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
@@ -882,6 +882,11 @@ function repairForkTitleIfNeeded(
   if (indexedTitle === title && fallbackTitle === title) return;
   updateForkedCodexSessionLine(filePath, sessionId, title);
   updateCodexSqliteForkTitle(sessionId, title);
+}
+
+function codexForkDepth(forkMetadata: CodexForkMetadata | null, title: string | null): number {
+  if (!forkMetadata?.isFork) return 0;
+  return parseForkedTitle(title ?? "").depth || 1;
 }
 
 function forkVisibleAfterMs(payload: Record<string, unknown> | null, eventTimestamp: string | null): number | null {

@@ -1183,7 +1183,7 @@ export async function createServer(port: number) {
   });
 
   app.post("/api/agent/messages", async (req, res) => {
-    const { content, session_id, fork_session_id, run_id, client_message_id } = req.body ?? {};
+    const { content, session_id, run_id, client_message_id } = req.body ?? {};
     if (typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "content required" });
       return;
@@ -1192,15 +1192,7 @@ export async function createServer(port: number) {
       res.status(400).json({ error: "session_id must be a string" });
       return;
     }
-    if (fork_session_id != null && typeof fork_session_id !== "string") {
-      res.status(400).json({ error: "fork_session_id must be a string" });
-      return;
-    }
     const requestProvider = agentProvider;
-    if (fork_session_id && requestProvider !== "codex") {
-      res.status(400).json({ error: "Forking existing chats is only supported for Codex." });
-      return;
-    }
     if (requestProvider === "claude" && !claudeCliChatEnabled) {
       res.status(409).json({ error: "Claude Code chat is disabled" });
       return;
@@ -1212,17 +1204,7 @@ export async function createServer(port: number) {
     let chatCwd = workspace.cwd;
     let shouldCompactForkBeforeMessage = false;
     let forkedCodexTitle: string | null = null;
-    if (requestProvider === "codex" && typeof fork_session_id === "string" && fork_session_id) {
-      const fork = forkCodexSession(fork_session_id);
-      if (!fork) {
-        res.status(404).json({ error: "Codex session to fork was not found." });
-        return;
-      }
-      providerSessionId = fork.id;
-      chatCwd = fork.cwd;
-      forkedCodexTitle = fork.title ?? null;
-      shouldCompactForkBeforeMessage = true;
-    } else if (requestProvider === "codex" && providerSessionId) {
+    if (requestProvider === "codex" && providerSessionId) {
       const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
       if (existing?.cwd) chatCwd = existing.cwd;
       if (existing?.needs_compact) {
