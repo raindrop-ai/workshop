@@ -17,7 +17,7 @@ import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContex
 import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
-import { forkCodexSession, getCodexSession, listCodexSessions } from "./codex-sessions";
+import { ensureForkedCodexSessionTitle, forkCodexSession, getCodexSession, listCodexSessions } from "./codex-sessions";
 import { runClaudeCliChat } from "./claude-cli-chat";
 import { runCodexCliChat } from "./codex-cli-chat";
 import {
@@ -1190,6 +1190,7 @@ export async function createServer(port: number) {
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
     let chatCwd = workspace.cwd;
     let shouldCompactForkBeforeMessage = false;
+    let forkedCodexTitle: string | null = null;
     if (requestProvider === "codex" && typeof fork_session_id === "string" && fork_session_id) {
       const fork = forkCodexSession(fork_session_id);
       if (!fork) {
@@ -1198,6 +1199,7 @@ export async function createServer(port: number) {
       }
       providerSessionId = fork.id;
       chatCwd = fork.cwd;
+      forkedCodexTitle = fork.title ?? null;
       shouldCompactForkBeforeMessage = true;
     } else if (requestProvider === "codex" && providerSessionId) {
       const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
@@ -1218,6 +1220,11 @@ export async function createServer(port: number) {
       };
       broadcast("agent_message_stream", data);
       if (requestProvider === "claude") broadcast("claude_message_stream", data);
+    };
+    const preserveForkTitle = () => {
+      if (requestProvider !== "codex" || !providerSessionId) return;
+      const session = ensureForkedCodexSessionTitle(providerSessionId, forkedCodexTitle);
+      forkedCodexTitle = session?.title ?? forkedCodexTitle;
     };
     try {
       if (requestProvider === "codex" && shouldCompactForkBeforeMessage && providerSessionId) {
@@ -1248,8 +1255,10 @@ export async function createServer(port: number) {
           onError(nextContent) {
             errorText = nextContent;
           },
+        }).finally(() => {
+          clearTimeout(compactTimer);
+          preserveForkTitle();
         });
-        clearTimeout(compactTimer);
         if (compactTimedOut) {
           broadcastStreamEvent({
             type: "status",
@@ -1264,6 +1273,7 @@ export async function createServer(port: number) {
         errorText = "";
       }
 
+      preserveForkTitle();
       const chatInput = {
         backendUrl: backendUrl(),
         content,
@@ -1279,6 +1289,7 @@ export async function createServer(port: number) {
           },
           onProviderSession(sessionId) {
             providerSessionId = sessionId;
+            preserveForkTitle();
             broadcastStreamEvent({ type: "provider_session", sessionId });
           },
           onText(nextContent) {
@@ -1312,6 +1323,7 @@ export async function createServer(port: number) {
           },
         });
       if (result.code !== 0 || errorText) {
+        preserveForkTitle();
         res.status(502).json({
           error: errorText || result.stderr || `${agentProviderLabel(requestProvider)} exited with code ${result.code ?? "unknown"}`,
           client_message_id: clientMessageId,
@@ -1320,6 +1332,7 @@ export async function createServer(port: number) {
         });
         return;
       }
+      preserveForkTitle();
       res.json({
         client_message_id: clientMessageId,
         session_id: providerSessionId,

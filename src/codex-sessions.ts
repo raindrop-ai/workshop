@@ -67,6 +67,27 @@ export function forkCodexSession(sourceSessionId: string): ClaudeSessionSummary 
   return readCodexSessionSummaryFile(forkPath, readCodexSessionMetadata());
 }
 
+export function ensureForkedCodexSessionTitle(
+  sessionId: string,
+  expectedTitle?: string | null,
+): ClaudeSessionSummary | null {
+  if (!SESSION_ID_PATTERN.test(sessionId)) return null;
+
+  const metadata = readCodexSessionMetadata();
+  const file = findCodexSessionFile(sessionId, null, metadata);
+  if (!file) return null;
+
+  const forkMetadata = readForkedCodexMetadata(file);
+  if (!expectedTitle && !forkMetadata?.isFork) {
+    return readCodexSessionSummaryFile(file, metadata);
+  }
+
+  const title = forkedCodexTitle(expectedTitle ?? forkMetadata?.title ?? `Codex chat ${sessionId.slice(0, 8)}`);
+  updateForkedCodexSessionLine(file, sessionId, title);
+  updateCodexSqliteForkTitle(sessionId, title);
+  return readCodexSessionSummaryFile(file, readCodexSessionMetadata());
+}
+
 function codexSessionFiles(): string[] {
   const root = path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions");
   const files: string[] = [];
@@ -117,6 +138,7 @@ function forkCodexSessionLine(
     ...payload,
     id: forkId,
     timestamp: now.toISOString(),
+    title: forkTitle,
     forked_from_id: sourceSessionId,
     originator: "workshop_codex_fork",
     workshop_title: forkTitle,
@@ -186,7 +208,7 @@ function writeForkedCodexSqliteMetadata(
       $git_branch: stringValue(source.git_branch),
       $git_origin_url: stringValue(source.git_origin_url),
       $cli_version: stringValue(source.cli_version) ?? "",
-      $first_user_message: stringValue(source.first_user_message) ?? "",
+      $first_user_message: forkTitle,
       $agent_nickname: stringValue(source.agent_nickname),
       $agent_role: stringValue(source.agent_role),
       $memory_mode: stringValue(source.memory_mode) ?? "enabled",
@@ -196,13 +218,72 @@ function writeForkedCodexSqliteMetadata(
       $created_at_ms: now.getTime(),
       $updated_at_ms: now.getTime(),
       $thread_source: stringValue(source.thread_source) ?? "user",
-      $preview: stringValue(source.preview) ?? "",
+      $preview: forkTitle,
     });
   } catch {
     return;
   } finally {
     db?.close();
   }
+}
+
+function readForkedCodexMetadata(filePath: string): { isFork: boolean; title: string | null } | null {
+  const line = firstSessionMetaLine(filePath);
+  if (!line) return null;
+
+  const event = parseLine(line);
+  const payload = objectValue(event?.payload);
+  if (!payload) return null;
+
+  const title = stringValue(payload.workshop_title) ?? stringValue(payload.title);
+  return {
+    isFork: stringValue(payload.originator) === "workshop_codex_fork" || !!stringValue(payload.forked_from_id),
+    title,
+  };
+}
+
+function updateForkedCodexSessionLine(filePath: string, sessionId: string, forkTitle: string) {
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  let changed = false;
+  const updated = lines.map((line) => {
+    if (changed || !line.trim() || !isSessionMetaLine(line)) return line;
+    const event = parseLine(line);
+    const payload = objectValue(event?.payload);
+    if (!payload || stringValue(payload.id) !== sessionId) return line;
+    changed = true;
+    event!.payload = {
+      ...payload,
+      title: forkTitle,
+      workshop_title: forkTitle,
+      originator: stringValue(payload.originator) ?? "workshop_codex_fork",
+    };
+    return JSON.stringify(event);
+  });
+  if (changed) fs.writeFileSync(filePath, updated.join("\n"));
+}
+
+function updateCodexSqliteForkTitle(sessionId: string, forkTitle: string) {
+  const dbPath = codexStateDbPath();
+  if (!dbPath) return;
+
+  let db: Database | null = null;
+  try {
+    db = new Database(dbPath);
+    db.query(`
+      UPDATE threads
+      SET title = ?, first_user_message = ?, preview = ?
+      WHERE id = ?
+    `).run(forkTitle, forkTitle, forkTitle, sessionId);
+  } catch {
+    return;
+  } finally {
+    db?.close();
+  }
+}
+
+function firstSessionMetaLine(filePath: string): string | null {
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  return lines.find((line) => isSessionMetaLine(line)) ?? null;
 }
 
 function isSessionMetaLine(line: string): boolean {
@@ -403,11 +484,13 @@ function readCodexSessionSummaryFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
+  const title = codexSessionTitle(indexed?.title, fallbackTitle);
+  repairForkTitleIfNeeded(id, indexed?.title, title, fallbackTitle);
   return {
     id,
     path: filePath,
     cwd,
-    title: indexed?.title ?? fallbackTitle ?? null,
+    title,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -554,6 +637,8 @@ function readCodexSessionFile(
 
   const indexed = metadata.get(id);
   if (!id || !cwd || threadSource === "subagent" || indexed?.threadSource === "subagent") return null;
+  const title = codexSessionTitle(indexed?.title, fallbackTitle);
+  repairForkTitleIfNeeded(id, indexed?.title, title, fallbackTitle);
   const previewSource =
     lastPrompt ||
     (lastUserMessage as ClaudeChatMessage | null)?.content ||
@@ -564,7 +649,7 @@ function readCodexSessionFile(
     id,
     path: filePath,
     cwd,
-    title: indexed?.title ?? fallbackTitle ?? null,
+    title,
     created_at: createdAt ?? indexed?.createdAt ?? null,
     updated_at: updatedAt ?? indexed?.updatedAt ?? null,
     message_count: messageCount,
@@ -642,6 +727,21 @@ function previewText(value: string | null): string | null {
     .replace(/\s+/g, " ")
     .trim();
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function codexSessionTitle(indexedTitle: string | null | undefined, fallbackTitle: string | null): string | null {
+  if (fallbackTitle?.startsWith("[forked] ")) return fallbackTitle;
+  return indexedTitle ?? fallbackTitle ?? null;
+}
+
+function repairForkTitleIfNeeded(
+  sessionId: string,
+  indexedTitle: string | null | undefined,
+  title: string | null,
+  fallbackTitle: string | null,
+) {
+  if (!title || !fallbackTitle?.startsWith("[forked] ") || indexedTitle === title) return;
+  updateCodexSqliteForkTitle(sessionId, title);
 }
 
 function codexDisplayText(value: string | null): string | null {
