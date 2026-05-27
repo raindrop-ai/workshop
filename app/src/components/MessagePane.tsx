@@ -508,12 +508,17 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         timestamp: new Date().toISOString(),
       };
       setDetail((current) => current
-        ? { ...current, messages: [...current.messages, optimistic] }
+        ? {
+          ...current,
+          title: shouldForkCodexSession ? forkedSessionTitle(sessionTitle(current, provider)) : current.title,
+          messages: [...current.messages, optimistic],
+        }
         : {
           id: "new",
           created_at: optimistic.timestamp,
           updated_at: optimistic.timestamp,
           message_count: 1,
+          title: shouldForkCodexSession ? "[forked] New chat" : null,
           last_prompt: content,
           preview: content,
           messages: [optimistic],
@@ -1598,6 +1603,11 @@ function ChatListItem({
 function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
   if (provider === "codex") return session.title || session.preview || `Codex chat ${session.id.slice(0, 8)}`;
   return session.title || session.preview || "Untitled chat";
+}
+
+function forkedSessionTitle(title: string): string {
+  const cleaned = title.replace(/\s+/g, " ").trim() || "Untitled chat";
+  return cleaned.startsWith("[forked] ") ? cleaned : `[forked] ${cleaned}`;
 }
 
 function ChatPreviewItem({

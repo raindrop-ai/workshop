@@ -60,6 +60,14 @@ const CODEX_FORK_COMPACT_PROMPT = [
   "Workshop maintenance turn: compact this newly forked Codex conversation before the user's trace-debugging message is sent.",
   "Do not inspect files or call tools. Reply exactly: Compacted.",
 ].join("\n");
+const DEFAULT_CODEX_FORK_COMPACT_TIMEOUT_MS = 25_000;
+
+function codexForkCompactTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.RAINDROP_WORKSHOP_CODEX_FORK_COMPACT_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_CODEX_FORK_COMPACT_TIMEOUT_MS;
+}
 
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
   return value === "user" || value === "claude-code" || value === "codex" ? value : null;
@@ -1214,6 +1222,14 @@ export async function createServer(port: number) {
     try {
       if (requestProvider === "codex" && shouldCompactForkBeforeMessage && providerSessionId) {
         broadcastStreamEvent({ type: "status", content: "Compacting forked Codex chat..." });
+        broadcastStreamEvent({ type: "provider_session", sessionId: providerSessionId });
+        const compactAbort = new AbortController();
+        const compactTimeoutMs = codexForkCompactTimeoutMs();
+        let compactTimedOut = false;
+        const compactTimer = setTimeout(() => {
+          compactTimedOut = true;
+          compactAbort.abort();
+        }, compactTimeoutMs);
         const compactResult = await runCodexCliChat({
           backendUrl: backendUrl(),
           content: CODEX_FORK_COMPACT_PROMPT,
@@ -1221,6 +1237,7 @@ export async function createServer(port: number) {
           runId: null,
           resumeSessionId: providerSessionId,
           forceAutoCompact: true,
+          abortSignal: compactAbort.signal,
         }, {
           onEvent() {},
           onProviderSession(sessionId) {
@@ -1232,8 +1249,17 @@ export async function createServer(port: number) {
             errorText = nextContent;
           },
         });
-        if (compactResult.code !== 0 || errorText) {
-          throw new Error(errorText || compactResult.stderr || "Failed to compact forked Codex chat.");
+        clearTimeout(compactTimer);
+        if (compactTimedOut) {
+          broadcastStreamEvent({
+            type: "status",
+            content: `Codex compact did not finish within ${Math.round(compactTimeoutMs / 1000)}s; sending without waiting for it.`,
+          });
+        } else if (compactResult.code !== 0 || errorText) {
+          broadcastStreamEvent({
+            type: "status",
+            content: errorText || compactResult.stderr || "Codex compact failed; sending without compacting.",
+          });
         }
         errorText = "";
       }

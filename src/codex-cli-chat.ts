@@ -26,10 +26,22 @@ export function runCodexCliChat(
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let closed = false;
   if (input.abortSignal) {
-    if (input.abortSignal.aborted) child.kill("SIGINT");
-    input.abortSignal.addEventListener("abort", () => child.kill("SIGINT"), { once: true });
+    const abortChild = () => {
+      if (closed) return;
+      child.kill("SIGINT");
+      const timer = setTimeout(() => {
+        if (!closed) child.kill("SIGKILL");
+      }, 3_000);
+      timer.unref?.();
+    };
+    if (input.abortSignal.aborted) abortChild();
+    input.abortSignal.addEventListener("abort", abortChild, { once: true });
   }
+  child.once("close", () => {
+    closed = true;
+  });
   return consumeCodexStream(child, handlers);
 }
 
