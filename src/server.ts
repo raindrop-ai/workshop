@@ -44,6 +44,7 @@ import {
   parseAskUserQuestionHookInput,
 } from "./claude-ask-user-question";
 import { createViewingRegistry } from "./viewing-registry";
+import { isLoopbackRemoteAddress } from "./local-access";
 import {
   createAnnotation,
   deleteAnnotation,
@@ -352,7 +353,13 @@ function demoChatHtml(): string {
 export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({
+    server,
+    path: "/ws",
+    verifyClient: (info, done) => {
+      done(isLoopbackRemoteAddress(info.req.socket.remoteAddress), 403, "Forbidden");
+    },
+  });
 
   const clients = new Set<WebSocket>();
 
@@ -452,6 +459,15 @@ export async function createServer(port: number) {
     "/v1/users/identify",
     "/v1/signals/track",
   ]);
+
+  // Workshop is a local control plane. Enforce loopback at the socket layer so
+  // spoofable Host/Origin headers cannot turn a broad listener into LAN access.
+  app.use((req, res, next) => {
+    if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    next();
+  });
 
   // CORS for the ingestion routes browser SDKs actually post to —
   // narrower than `/v1/*` so future routes under that prefix don't

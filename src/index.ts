@@ -32,6 +32,7 @@ import path from "path";
 import { spawn } from "child_process";
 import { createInterface } from "readline/promises";
 import { createServer } from "./server";
+import { WORKSHOP_BIND_HOST } from "./local-access";
 import { closeDb, getDbPath } from "./db";
 import { findFreePort, isPortFree } from "./port-check";
 import { VERSION } from "./version";
@@ -76,7 +77,7 @@ async function runBackend(): Promise<void> {
   const port = hasExplicitPort() ? requestedPort : await findFreePort(requestedPort);
   const { server } = await createServer(port);
 
-  server.listen(port, () => {
+  server.listen(port, WORKSHOP_BIND_HOST, () => {
     printPortFallback(requestedPort, port);
     printWorkshopAccess(port);
   });
