@@ -1,0 +1,1 @@
+ALTER TABLE `spans` ADD `total_tokens` integer;

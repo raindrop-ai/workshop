@@ -79,6 +79,7 @@ const spanCacheSchema: z.ZodType<Span> = z.object({
   provider: z.string().nullable(),
   input_tokens: z.number().nullable(),
   output_tokens: z.number().nullable(),
+  total_tokens: z.number().nullable().optional(),
   attributes: z.string().nullable(),
   normalized: z.custom<Span["normalized"]>().optional(),
 });

@@ -94,6 +94,7 @@ function SpanTooltip({
   const type = spanTypeInfo(span);
   const inTok = span.input_tokens ?? 0;
   const outTok = span.output_tokens ?? 0;
+  const totalTok = span.total_tokens ?? 0;
   const inputRaw = span.input_payload?.trim() ?? "";
   const outputRaw = span.output_payload?.trim() ?? "";
 
@@ -131,6 +132,9 @@ function SpanTooltip({
         {span.model && <span style={{ color: C.fg1 }}>{span.model}</span>}
         {(inTok > 0 || outTok > 0) && (
           <span style={{ color: C.fg1 }}>{inTok.toLocaleString()} in / {outTok.toLocaleString()} out</span>
+        )}
+        {inTok === 0 && outTok === 0 && totalTok > 0 && (
+          <span style={{ color: C.fg1 }}>{totalTok.toLocaleString()} total</span>
         )}
       </div>
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">

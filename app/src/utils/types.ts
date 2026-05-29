@@ -100,6 +100,7 @@ export interface Span {
   provider: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  total_tokens: number | null;
   attributes: string | null;
   /**
    * SDK-agnostic typed view of this span's content. Populated by the server.

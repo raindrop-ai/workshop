@@ -1015,7 +1015,7 @@ interface TraceSpan {
   span_name: string; span_type: string; status: string;
   start_time_ns: number; end_time_ns: number; duration_ns: number;
   input: string | null; output: string | null;
-  input_tokens: number | null; output_tokens: number | null;
+  input_tokens: number | null; output_tokens: number | null; total_tokens?: number | null;
   model: string | null; provider: string | null;
   attributes: Record<string, string | number>;
 }
@@ -1048,7 +1048,7 @@ function mapTraceToSpans(traces: TraceSpan[], eventId: string): Span[] {
       input_payload: inputPayload, output_payload: outputPayload,
       start_time_ms: t.start_time_ns / 1e6, end_time_ms: t.end_time_ns / 1e6,
       duration_ms: t.duration_ns / 1e6, model: t.model, provider: t.provider,
-      input_tokens: t.input_tokens, output_tokens: t.output_tokens,
+      input_tokens: t.input_tokens, output_tokens: t.output_tokens, total_tokens: t.total_tokens ?? null,
       attributes: Object.keys(t.attributes).length > 0 ? JSON.stringify(t.attributes) : null,
     };
   });

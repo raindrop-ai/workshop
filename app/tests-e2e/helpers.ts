@@ -379,7 +379,7 @@ export type DbSpanRow = {
 async function fetchSpansViaApi(
   workshopUrl: string,
   runId: string,
-): Promise<{ id: string; name: string; span_type: string | null; status: string | null; input_preview: string; output_preview: string; model: string | null; tokens: { in: number; out: number } }[]> {
+): Promise<{ id: string; name: string; span_type: string | null; status: string | null; input_preview: string; output_preview: string; model: string | null; tokens: { in: number; out: number; total: number } }[]> {
   const res = await fetch(
     `${workshopUrl}/api/runs/${encodeURIComponent(runId)}/spans?limit=500&payload_preview_chars=400`,
   );
@@ -395,7 +395,7 @@ async function fetchSpansViaApi(
       input_preview: string;
       output_preview: string;
       model: string | null;
-      tokens: { in: number; out: number };
+      tokens: { in: number; out: number; total: number };
     }[]
   >;
 }
@@ -431,6 +431,7 @@ export type LlmSpanRow = {
   model: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  total_tokens: number | null;
 };
 
 /**

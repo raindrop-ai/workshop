@@ -165,7 +165,7 @@ function normalizeLegacyIndexedGenAiMessages(attrs: Record<string, string | numb
   const system: string[] = [];
   for (const index of promptIndexes) {
     const role = attrs[`gen_ai.prompt.${index}.role`];
-    const content = attrs[`gen_ai.prompt.${index}.content`];
+    const content = attrs[`gen_ai.prompt.${index}.content`] ?? attrs[`gen_ai.prompt.${index}.user`];
     if (typeof role !== "string") continue;
     const text = normalizeLegacyContent(content);
     if (role === "system") {
@@ -188,7 +188,7 @@ function normalizeLegacyIndexedGenAiMessages(attrs: Record<string, string | numb
     inputPayload: promptIndexes.length
       ? JSON.stringify(promptIndexes.map((index) => ({
         role: attrs[`gen_ai.prompt.${index}.role`],
-        content: attrs[`gen_ai.prompt.${index}.content`],
+        content: attrs[`gen_ai.prompt.${index}.content`] ?? attrs[`gen_ai.prompt.${index}.user`],
       })))
       : undefined,
     outputPayload,
@@ -350,4 +350,3 @@ export const traceloopToolAdapter: SpanAdapter = {
     };
   },
 };
-

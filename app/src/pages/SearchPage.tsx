@@ -47,6 +47,7 @@ interface TraceSpan {
   output: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  total_tokens?: number | null;
   model: string | null;
   provider: string | null;
   attributes: Record<string, string | number>;
@@ -134,6 +135,7 @@ function mapTraceToSpans(traces: TraceSpan[], eventId: string): Span[] {
     provider: t.provider,
     input_tokens: t.input_tokens,
     output_tokens: t.output_tokens,
+    total_tokens: t.total_tokens ?? null,
     attributes: Object.keys(t.attributes).length > 0 ? JSON.stringify(t.attributes) : null,
   }; });
 }
