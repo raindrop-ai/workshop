@@ -89,6 +89,37 @@ function getTraceIdFromPartialEvent(body: unknown): string | undefined {
   return undefined;
 }
 
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function hostHeaderName(host: string): string {
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    return end >= 0 ? host.slice(1, end) : host;
+  }
+  return host.split(":")[0];
+}
+
+function isAllowedLocalHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+function isAllowedLocalAccess(hostHeader: string | string[] | undefined, originHeader: string | string[] | undefined): boolean {
+  const host = firstHeader(hostHeader) ?? "";
+  const hostName = hostHeaderName(host);
+  if (hostName && !isAllowedLocalHostname(hostName)) return false;
+
+  const origin = firstHeader(originHeader);
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    return isAllowedLocalHostname(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 const DEMO_CHAT_MODEL = process.env.RAINDROP_DEMO_CHAT_MODEL ?? "gpt-5.5-nano";
 
 type DemoChatMessage = {
@@ -352,7 +383,13 @@ function demoChatHtml(): string {
 export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({
+    server,
+    path: "/ws",
+    verifyClient(info: { origin: string; req: http.IncomingMessage }, done: (res: boolean, code?: number, message?: string) => void) {
+      done(isAllowedLocalAccess(info.req.headers.host, info.origin || info.req.headers.origin), 403, "Forbidden");
+    },
+  });
 
   const clients = new Set<WebSocket>();
 
@@ -472,21 +509,8 @@ export async function createServer(port: number) {
   // send Origin/Host so they pass through unaffected.
   app.use((req, res, next) => {
     if (INGEST_PATHS.has(req.path)) return next();
-    const host = req.headers.host ?? "";
-    const hostName = host.split(":")[0];
-    if (hostName && hostName !== "127.0.0.1" && hostName !== "localhost") {
+    if (!isAllowedLocalAccess(req.headers.host, req.headers.origin)) {
       return res.status(403).json({ error: "forbidden" });
-    }
-    const origin = req.headers.origin;
-    if (origin) {
-      try {
-        const u = new URL(origin);
-        if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") {
-          return res.status(403).json({ error: "forbidden" });
-        }
-      } catch {
-        return res.status(403).json({ error: "forbidden" });
-      }
     }
     next();
   });
