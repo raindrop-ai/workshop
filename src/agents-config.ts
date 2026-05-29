@@ -87,7 +87,7 @@ export function loadAgentsConfig(): AgentsConfig {
   const merged: AgentsConfig = {};
 
   // Legacy manual registry. Kept for compatibility with existing installs.
-  const legacy = readJsonFile<AgentsConfig>(LEGACY_CONFIG_PATH, {});
+  const legacy = sanitizeLegacyAgentsConfig(readJsonFile<AgentsConfig>(LEGACY_CONFIG_PATH, {}));
   Object.assign(merged, legacy);
 
   const projects = loadReplayProjectsRegistry();
@@ -112,11 +112,51 @@ export function loadAgentsConfig(): AgentsConfig {
   return merged;
 }
 
-export function saveAgentsConfig(config: AgentsConfig): void {
-  // Legacy settings UI still writes the old JSON file. New replay project
-  // registration writes ~/.raindrop/replay-projects.json instead.
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") out[key] = item;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((item): item is string => typeof item === "string");
+  return out.length > 0 ? out : undefined;
+}
+
+export function sanitizeLegacyAgentsConfig(config: unknown): AgentsConfig {
+  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
+  const sanitized: AgentsConfig = {};
+  for (const [eventName, raw] of Object.entries(config)) {
+    if (!eventName || !raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    const agent: AgentConfig = {};
+    if (typeof entry.url === "string" && entry.url.trim()) agent.url = entry.url.trim();
+    const input = stringMap(entry.input);
+    if (input) agent.input = input;
+    const prefillFromTrace = stringMap(entry.prefillFromTrace);
+    if (prefillFromTrace) agent.prefillFromTrace = prefillFromTrace;
+    const contextFromTrace = stringMap(entry.contextFromTrace);
+    if (contextFromTrace) agent.contextFromTrace = contextFromTrace;
+    const models = stringList(entry.models);
+    if (models) agent.models = models;
+    if (Object.keys(agent).length > 0) sanitized[eventName] = agent;
+  }
+  return sanitized;
+}
+
+export function saveAgentsConfig(config: AgentsConfig): AgentsConfig {
+  // Legacy settings UI still writes URL/context endpoint data to the old JSON
+  // file. Command-bearing replay project registrations live in
+  // ~/.raindrop/replay-projects.json and are created through explicit local
+  // project registration, not this HTTP settings endpoint.
+  const sanitized = sanitizeLegacyAgentsConfig(config);
   fs.mkdirSync(path.dirname(LEGACY_CONFIG_PATH), { recursive: true });
-  fs.writeFileSync(LEGACY_CONFIG_PATH, JSON.stringify(config, null, 2));
+  fs.writeFileSync(LEGACY_CONFIG_PATH, JSON.stringify(sanitized, null, 2));
+  return sanitized;
 }
 
 export function loadReplayProjectsRegistry(): ReplayProjectsRegistry {

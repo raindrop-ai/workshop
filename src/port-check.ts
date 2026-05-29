@@ -1,15 +1,12 @@
 /**
  * Cheap "is anything listening on this TCP port?" probe.
  *
- * Tries to bind a fresh server to :port exactly like the Workshop server
- * does. If the bind succeeds the port is free (we close it immediately).
- * Any listen error — EADDRINUSE or otherwise — means the port is taken.
- *
- * Intentionally does not pass a host: binding to 127.0.0.1 misses IPv6
- * wildcard listeners (`*:5899`), and the real `server.listen(port)` would
- * then still fail with EADDRINUSE.
+ * Tries to bind a fresh server to :port exactly like the Workshop server does.
+ * If the bind succeeds the port is free (we close it immediately). Any listen
+ * error — EADDRINUSE or otherwise — means the port is taken.
  */
 import net from "net";
+import { WORKSHOP_BIND_HOST } from "./local-access";
 
 const MAX_PORT = 65535;
 
@@ -28,7 +25,7 @@ export function isPortFree(port: number): Promise<boolean> {
       server.close(() => settle(true));
     });
     try {
-      server.listen(port);
+      server.listen(port, WORKSHOP_BIND_HOST);
     } catch {
       settle(false);
     }

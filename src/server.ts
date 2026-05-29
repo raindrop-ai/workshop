@@ -44,6 +44,7 @@ import {
   parseAskUserQuestionHookInput,
 } from "./claude-ask-user-question";
 import { createViewingRegistry } from "./viewing-registry";
+import { isLoopbackRemoteAddress } from "./local-access";
 import {
   createAnnotation,
   deleteAnnotation,
@@ -87,6 +88,37 @@ function getTraceIdFromPartialEvent(body: unknown): string | undefined {
     if (v) return normalizeOtelId(v, 16) ?? v;
   }
   return undefined;
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function hostHeaderName(host: string): string {
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    return end >= 0 ? host.slice(1, end) : host;
+  }
+  return host.split(":")[0];
+}
+
+function isAllowedLocalHostname(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost";
+}
+
+function isAllowedLocalAccess(hostHeader: string | string[] | undefined, originHeader: string | string[] | undefined): boolean {
+  const host = firstHeader(hostHeader) ?? "";
+  const hostName = hostHeaderName(host);
+  if (hostName && !isAllowedLocalHostname(hostName)) return false;
+
+  const origin = firstHeader(originHeader);
+  if (!origin) return true;
+  try {
+    const u = new URL(origin);
+    return isAllowedLocalHostname(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 const DEMO_CHAT_MODEL = process.env.RAINDROP_DEMO_CHAT_MODEL ?? "gpt-5.5-nano";
@@ -352,7 +384,18 @@ function demoChatHtml(): string {
 export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({
+    server,
+    path: "/ws",
+    verifyClient: (info, done) => {
+      done(
+        isLoopbackRemoteAddress(info.req.socket.remoteAddress) &&
+          isAllowedLocalAccess(info.req.headers.host, info.origin || info.req.headers.origin),
+        403,
+        "Forbidden",
+      );
+    },
+  });
 
   const clients = new Set<WebSocket>();
 
@@ -453,6 +496,15 @@ export async function createServer(port: number) {
     "/v1/signals/track",
   ]);
 
+  // Workshop is a local control plane. Enforce loopback at the socket layer so
+  // spoofable Host/Origin headers cannot turn a broad listener into LAN access.
+  app.use((req, res, next) => {
+    if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    next();
+  });
+
   // CORS for the ingestion routes browser SDKs actually post to —
   // narrower than `/v1/*` so future routes under that prefix don't
   // inherit cross-origin access by default.
@@ -472,21 +524,8 @@ export async function createServer(port: number) {
   // send Origin/Host so they pass through unaffected.
   app.use((req, res, next) => {
     if (INGEST_PATHS.has(req.path)) return next();
-    const host = req.headers.host ?? "";
-    const hostName = host.split(":")[0];
-    if (hostName && hostName !== "127.0.0.1" && hostName !== "localhost") {
+    if (!isAllowedLocalAccess(req.headers.host, req.headers.origin)) {
       return res.status(403).json({ error: "forbidden" });
-    }
-    const origin = req.headers.origin;
-    if (origin) {
-      try {
-        const u = new URL(origin);
-        if (u.hostname !== "127.0.0.1" && u.hostname !== "localhost") {
-          return res.status(403).json({ error: "forbidden" });
-        }
-      } catch {
-        return res.status(403).json({ error: "forbidden" });
-      }
     }
     next();
   });
@@ -1735,10 +1774,10 @@ export async function createServer(port: number) {
 
   app.put("/api/agents", (req, res) => {
     try {
-      saveAgentsConfig(req.body);
+      const agents = saveAgentsConfig(req.body);
       // Notify any open Workshop UIs that the registry changed so the
       // "Local Agent" replay button un-greys without a page reload.
-      broadcast("agents_updated", { agents: req.body });
+      broadcast("agents_updated", { agents });
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: String(err) });

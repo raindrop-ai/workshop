@@ -31,6 +31,7 @@
 import { spawn, spawnSync, type Subprocess } from "bun";
 import path from "path";
 import fs from "fs";
+import { WORKSHOP_BIND_HOST } from "../src/local-access";
 import { createServer } from "../src/server";
 import { getDbPath } from "../src/db";
 
@@ -319,7 +320,7 @@ function color(idx: number, text: string): string {
 function listen(server: ReturnType<typeof createServer> extends Promise<infer R> ? R extends { server: infer S } ? S : never : never, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, () => {
+    server.listen(port, WORKSHOP_BIND_HOST, () => {
       const addr = server.address();
       if (addr && typeof addr === "object") resolve(addr.port);
       else resolve(port);
