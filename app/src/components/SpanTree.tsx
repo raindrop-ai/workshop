@@ -153,6 +153,7 @@ function SpanDetail({ span }: { span: Span }) {
         {span.model && <><div style={{ color: C.fg0 }}>model</div><div style={{ color: C.fg2 }}>{span.model}</div></>}
         {span.input_tokens != null && <><div style={{ color: C.fg0 }}>input tokens</div><div style={{ color: C.fg2 }}>{span.input_tokens.toLocaleString()}</div></>}
         {span.output_tokens != null && <><div style={{ color: C.fg0 }}>output tokens</div><div style={{ color: C.fg2 }}>{span.output_tokens.toLocaleString()}</div></>}
+        {span.total_tokens != null && <><div style={{ color: C.fg0 }}>total tokens</div><div style={{ color: C.fg2 }}>{span.total_tokens.toLocaleString()}</div></>}
         <div style={{ color: C.fg0 }}>status</div>
         <div style={{ color: isErr ? C.red : C.fg2 }}>{span.status}</div>
         <div style={{ color: C.fg0 }}>start</div>

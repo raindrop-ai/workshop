@@ -582,7 +582,7 @@ export async function createServer(port: number) {
             input_payload: s.inputPayload, output_payload: s.outputPayload,
             start_time_ms: s.startTimeMs, end_time_ms: s.endTimeMs, duration_ms: s.durationMs,
             model: s.model, provider: s.provider,
-            input_tokens: s.inputTokens, output_tokens: s.outputTokens,
+            input_tokens: s.inputTokens, output_tokens: s.outputTokens, total_tokens: s.totalTokens,
             attributes: JSON.stringify(s.attributes),
           });
         }
@@ -1693,7 +1693,9 @@ export async function createServer(port: number) {
         input_payload: s.input_payload ?? undefined, output_payload: s.output_payload ?? undefined,
         start_time_ms: s.start_time_ms, end_time_ms: s.end_time_ms, duration_ms: s.duration_ms,
         model: s.model ?? undefined, provider: s.provider ?? undefined,
-        input_tokens: s.input_tokens ?? undefined, output_tokens: s.output_tokens ?? undefined,
+        input_tokens: s.input_tokens ?? undefined,
+        output_tokens: s.output_tokens ?? undefined,
+        total_tokens: s.total_tokens ?? undefined,
         attributes: s.attributes ?? undefined,
       });
     }

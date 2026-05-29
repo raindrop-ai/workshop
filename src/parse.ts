@@ -6,7 +6,7 @@ export interface ParsedSpan {
   traceId: string; spanId: string; parentSpanId?: string; name: string; spanType: string;
   status: string; inputPayload?: string; outputPayload?: string; startTimeMs: number;
   endTimeMs: number; durationMs: number; model?: string; provider?: string;
-  inputTokens?: number; outputTokens?: number; attributes: Record<string, string | number | boolean>;
+  inputTokens?: number; outputTokens?: number; totalTokens?: number; attributes: Record<string, string | number | boolean>;
   eventId?: string; eventName?: string; userId?: string; convoId?: string;
   replayRunId?: string;
   /**
@@ -179,6 +179,7 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
         const provider = first(attrs, "ai.model.provider", "gen_ai.system", "gen_ai.provider.name", "llm.system") as string | undefined;
         const inputTokens = first(attrs, "ai.usage.inputTokens", "ai.usage.promptTokens", "ai.usage.prompt_tokens", "gen_ai.usage.input_tokens") as number | undefined;
         const outputTokens = first(attrs, "ai.usage.outputTokens", "ai.usage.completionTokens", "ai.usage.completion_tokens", "gen_ai.usage.output_tokens") as number | undefined;
+        const totalTokens = first(attrs, "ai.usage.totalTokens", "ai.usage.total_tokens", "gen_ai.usage.total_tokens", "llm.usage.total_tokens") as number | undefined;
 
         const eventId = first(attrs, "ai.telemetry.metadata.raindrop.eventId", "ai.telemetry.metadata.traceloop.association.properties.event_id", "traceloop.association.properties.event_id", "traceloop.association.properties.traceloop.association.properties.event_id") as string | undefined;
         const eventName = first(attrs, "ai.telemetry.metadata.raindrop.eventName", "ai.telemetry.metadata.traceloop.association.properties.event_name", "traceloop.association.properties.event_name", "traceloop.association.properties.traceloop.association.properties.event_name") as string | undefined;
@@ -201,6 +202,7 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
         //      is "put it in properties" — works across every SDK wrapper.
         let replayRunId = first(
           attrs,
+          "raindrop.replayRunId",
           "ai.telemetry.metadata.raindrop.replayRunId",
           "traceloop.association.properties.replayRunId",
         ) as string | undefined;
@@ -231,6 +233,7 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
           model, provider,
           inputTokens: typeof inputTokens === "number" ? inputTokens : undefined,
           outputTokens: typeof outputTokens === "number" ? outputTokens : undefined,
+          totalTokens: typeof totalTokens === "number" ? totalTokens : undefined,
           attributes: allAttrs,
           eventId, eventName, userId, convoId, replayRunId,
           normalized: match.normalized,

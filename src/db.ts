@@ -321,7 +321,7 @@ export function deleteRun(runId: string) {
   });
 }
 
-export function insertSpan(span: { id: string; run_id: string; parent_span_id?: string; name: string; span_type?: string; status?: string; input_payload?: string; output_payload?: string; start_time_ms: number; end_time_ms: number; duration_ms: number; model?: string; provider?: string; input_tokens?: number; output_tokens?: number; attributes?: string }) {
+export function insertSpan(span: { id: string; run_id: string; parent_span_id?: string; name: string; span_type?: string; status?: string; input_payload?: string; output_payload?: string; start_time_ms: number; end_time_ms: number; duration_ms: number; model?: string; provider?: string; input_tokens?: number; output_tokens?: number; total_tokens?: number; attributes?: string }) {
   const row = {
     id: span.id,
     run_id: span.run_id,
@@ -338,6 +338,7 @@ export function insertSpan(span: { id: string; run_id: string; parent_span_id?: 
     provider: span.provider ?? null,
     input_tokens: span.input_tokens ?? null,
     output_tokens: span.output_tokens ?? null,
+    total_tokens: span.total_tokens ?? null,
     attributes: span.attributes ?? null,
   };
   getDrizzleDb()
@@ -481,6 +482,7 @@ export interface SpanMetaRow {
   duration_ms: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  total_tokens: number | null;
   model: string | null;
   provider: string | null;
   attributes: string | null;
@@ -504,6 +506,7 @@ export function getSpanMeta(spanId: string): SpanMetaRow | null {
       duration_ms: schema.spans.duration_ms,
       input_tokens: schema.spans.input_tokens,
       output_tokens: schema.spans.output_tokens,
+      total_tokens: schema.spans.total_tokens,
       model: schema.spans.model,
       provider: schema.spans.provider,
       attributes: schema.spans.attributes,
@@ -811,7 +814,7 @@ export interface OutlineSpan {
   span_type: string | null;
   status: string;
   duration_ms: number;
-  tokens: { in: number; out: number };
+  tokens: { in: number; out: number; total: number };
   model: string | null;
   input_preview: string;
   output_preview: string;
@@ -889,6 +892,7 @@ export function getRunOutline(runId: string, payloadPreviewChars = 80): RunOutli
       (SELECT COUNT(*) FROM live_events e WHERE e.trace_id = r.id) AS live_event_count,
       (SELECT COALESCE(SUM(input_tokens), 0) FROM spans s WHERE s.run_id = r.id) AS total_input_tokens,
       (SELECT COALESCE(SUM(output_tokens), 0) FROM spans s WHERE s.run_id = r.id) AS total_output_tokens,
+      (SELECT COALESCE(SUM(total_tokens), 0) FROM spans s WHERE s.run_id = r.id) AS total_tokens,
       (SELECT COALESCE(SUM(LENGTH(COALESCE(s.input_payload, '')) + LENGTH(COALESCE(s.output_payload, ''))), 0)
        FROM spans s WHERE s.run_id = r.id) AS payload_total_chars,
       (SELECT s.model FROM spans s WHERE s.run_id = r.id AND s.model IS NOT NULL LIMIT 1) AS model,
@@ -917,7 +921,7 @@ export function getRunOutline(runId: string, payloadPreviewChars = 80): RunOutli
   const rawSpans = rawQuery(`
     SELECT id, parent_span_id, name, span_type, status,
            start_time_ms, end_time_ms, duration_ms,
-           input_tokens, output_tokens, model,
+           input_tokens, output_tokens, total_tokens, model,
            SUBSTR(COALESCE(input_payload, ''), 1, ?) AS input_head,
            LENGTH(COALESCE(input_payload, '')) AS input_chars,
            SUBSTR(COALESCE(output_payload, ''), 1, ?) AS output_head,
@@ -954,7 +958,7 @@ export function getRunOutline(runId: string, payloadPreviewChars = 80): RunOutli
     span_type: s.span_type,
     status: s.status ?? "UNSET",
     duration_ms: s.duration_ms ?? 0,
-    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0 },
+    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0, total: s.total_tokens ?? 0 },
     model: s.model,
     input_preview: s.input_chars > cap ? s.input_head.slice(0, cap) + "…" : s.input_head,
     output_preview: s.output_chars > cap ? s.output_head.slice(0, cap) + "…" : s.output_head,
@@ -1054,7 +1058,7 @@ export function getRunOutline(runId: string, payloadPreviewChars = 80): RunOutli
   }));
 
   // detectSubAgents only reads id / parent_span_id / name / span_type / status /
-  // start_time_ms / end_time_ms / duration_ms / model / input_tokens / output_tokens —
+  // start_time_ms / end_time_ms / duration_ms / model / input_tokens / output_tokens / total_tokens —
   // all already projected into rawSpans. Reuse it instead of issuing a SELECT * that
   // would pull the fat input_payload / output_payload columns we worked to avoid.
   const sub_agents: RunOutline["sub_agents"] = [];
@@ -1106,7 +1110,7 @@ export interface SpanSkeleton {
   status: string;
   start_time_ms: number;
   duration_ms: number;
-  tokens: { in: number; out: number };
+  tokens: { in: number; out: number; total: number };
   model: string | null;
   input_chars: number;
   output_chars: number;
@@ -1139,7 +1143,7 @@ export function listSpansFiltered(runId: string, opts: ListSpansOpts = {}): Span
   }
   if (typeof f.min_duration_ms === "number") { where.push("duration_ms >= ?"); params.push(f.min_duration_ms); }
   if (typeof f.min_tokens === "number") {
-    where.push("(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) >= ?");
+    where.push("MAX(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0), COALESCE(total_tokens, 0)) >= ?");
     params.push(f.min_tokens);
   }
 
@@ -1152,13 +1156,13 @@ export function listSpansFiltered(runId: string, opts: ListSpansOpts = {}): Span
     start_asc: "start_time_ms ASC",
     start_desc: "start_time_ms DESC",
     duration_desc: "duration_ms DESC",
-    tokens_desc: "(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) DESC",
+    tokens_desc: "MAX(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0), COALESCE(total_tokens, 0)) DESC",
   } as const) as Record<string, string>)[opts.sort ?? "start_asc"] ?? "start_time_ms ASC";
 
   const sql = `
     SELECT id, parent_span_id, name, span_type, status,
            start_time_ms, end_time_ms, duration_ms,
-           input_tokens, output_tokens, model,
+           input_tokens, output_tokens, total_tokens, model,
            SUBSTR(COALESCE(input_payload, ''), 1, ?) AS input_head,
            LENGTH(COALESCE(input_payload, '')) AS input_chars,
            SUBSTR(COALESCE(output_payload, ''), 1, ?) AS output_head,
@@ -1185,7 +1189,7 @@ export function listSpansFiltered(runId: string, opts: ListSpansOpts = {}): Span
     status: s.status ?? "UNSET",
     start_time_ms: s.start_time_ms,
     duration_ms: s.duration_ms ?? 0,
-    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0 },
+    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0, total: s.total_tokens ?? 0 },
     model: s.model,
     input_chars: s.input_chars,
     output_chars: s.output_chars,
@@ -1359,7 +1363,7 @@ function spanRowToContextSkeleton(s: any) {
     status: s.status ?? "UNSET",
     start_time_ms: s.start_time_ms,
     duration_ms: s.duration_ms ?? 0,
-    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0 },
+    tokens: { in: s.input_tokens ?? 0, out: s.output_tokens ?? 0, total: s.total_tokens ?? 0 },
     model: s.model,
   };
 }

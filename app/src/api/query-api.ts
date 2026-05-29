@@ -44,6 +44,7 @@ const traceSpanSchema = z.object({
   output: z.string().nullable(),
   input_tokens: z.number().nullable(),
   output_tokens: z.number().nullable(),
+  total_tokens: z.number().nullable().optional(),
   model: z.string().nullable(),
   provider: z.string().nullable(),
   attributes: z.record(z.string(), z.union([z.string(), z.number()])),
@@ -176,6 +177,7 @@ export function mapTraceToSpans(traces: TraceSpan[], eventId: string): Span[] {
       provider: t.provider,
       input_tokens: t.input_tokens,
       output_tokens: t.output_tokens,
+      total_tokens: t.total_tokens ?? null,
       attributes: Object.keys(t.attributes).length > 0 ? JSON.stringify(t.attributes) : null,
     };
   });

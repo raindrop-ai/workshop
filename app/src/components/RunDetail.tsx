@@ -221,7 +221,7 @@ function Badge({ label, copyValue }: { label: string; copyValue?: string }) {
 }
 
 function StatsLine({ stats, model, spans, active, startedAt }: {
-  stats: { spans: number; tools: number; llms: number; errors: number; dur: number; agents?: number; inTokens?: number; outTokens?: number };
+  stats: { spans: number; tools: number; llms: number; errors: number; dur: number; agents?: number; inTokens?: number; outTokens?: number; totalTokens?: number };
   model?: string | null;
   spans?: Span[];
   active?: boolean;
@@ -231,6 +231,8 @@ function StatsLine({ stats, model, spans, active, startedAt }: {
   const costRef = useRef<HTMLSpanElement>(null);
   const inTok = stats.inTokens ?? 0;
   const outTok = stats.outTokens ?? 0;
+  const totalTok = stats.totalTokens ?? 0;
+  const splitTok = inTok + outTok;
 
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -261,7 +263,8 @@ function StatsLine({ stats, model, spans, active, startedAt }: {
       {stats.errors > 0 && spans && <><ErrorsTooltip spans={spans} /><Dot /></>}
       {stats.errors > 0 && !spans && <><span style={{ color: C.red }}><NumberFlow value={stats.errors} /> error{stats.errors !== 1 ? "s" : ""}</span><Dot /></>}
       <Badge label="duration" /><span>{durMin > 0 ? <><NumberFlow value={durMin} />m <NumberFlow value={durRemSec} />s</> : <><NumberFlow value={durSec} />s</>}</span>
-      {(inTok > 0 || outTok > 0) && <><Dot /><Badge label="tokens" /><span><NumberFlow value={inTok} {...TOKEN_NUMBER_FLOW_TIMING} /> in / <NumberFlow value={outTok} {...TOKEN_NUMBER_FLOW_TIMING} /> out</span></>}
+      {(inTok > 0 || outTok > 0) && <><Dot /><Badge label="tokens" /><span><NumberFlow value={inTok} {...TOKEN_NUMBER_FLOW_TIMING} /> in / <NumberFlow value={outTok} {...TOKEN_NUMBER_FLOW_TIMING} /> out{totalTok > splitTok && <> / <NumberFlow value={totalTok} {...TOKEN_NUMBER_FLOW_TIMING} /> total</>}</span></>}
+      {splitTok === 0 && totalTok > 0 && <><Dot /><Badge label="tokens" /><span><NumberFlow value={totalTok} {...TOKEN_NUMBER_FLOW_TIMING} /> total</span></>}
       {(() => {
         const totalCost = breakdown.reduce((sum, b) => sum + (b.breakdown?.totalCost ?? 0), 0);
         const cost = totalCost > 0 ? fmtCost(totalCost) : null;
@@ -449,7 +452,7 @@ function ViewHeader({
   title: string;
   model?: string | null;
   active: boolean;
-  stats: { spans: number; tools: number; llms: number; errors: number; dur: number; agents?: number; inTokens?: number; outTokens?: number };
+  stats: { spans: number; tools: number; llms: number; errors: number; dur: number; agents?: number; inTokens?: number; outTokens?: number; totalTokens?: number };
   allSpans?: Span[];
   startedAt?: number;
   anthropicModels?: string[];
@@ -1344,6 +1347,7 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
           agents: subAgents.length,
           inTokens: [...getTokensByModel(spans).values()].reduce((s, v) => s + v.inTok, 0),
           outTokens: [...getTokensByModel(spans).values()].reduce((s, v) => s + v.outTok, 0),
+          totalTokens: spans.reduce((sum, s) => sum + (s.total_tokens ?? 0), 0),
         }}
         allSpans={spans}
         run={run}

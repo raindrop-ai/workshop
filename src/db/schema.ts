@@ -38,6 +38,7 @@ export const spans = sqliteTable(
     provider: text("provider"),
     input_tokens: integer("input_tokens"),
     output_tokens: integer("output_tokens"),
+    total_tokens: integer("total_tokens"),
     attributes: text("attributes"),
   },
   (table) => [
