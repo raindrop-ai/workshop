@@ -177,8 +177,8 @@ export function parseOtlpRequest(body: any): ParsedSpan[] {
 
         const model = first(attrs, "ai.model.id", "ai.response.model", "gen_ai.request.model", "gen_ai.response.model", "llm.request.model") as string | undefined;
         const provider = first(attrs, "ai.model.provider", "gen_ai.system", "gen_ai.provider.name", "llm.system") as string | undefined;
-        const inputTokens = first(attrs, "ai.usage.inputTokens", "ai.usage.promptTokens", "ai.usage.prompt_tokens", "gen_ai.usage.input_tokens") as number | undefined;
-        const outputTokens = first(attrs, "ai.usage.outputTokens", "ai.usage.completionTokens", "ai.usage.completion_tokens", "gen_ai.usage.output_tokens") as number | undefined;
+        const inputTokens = first(attrs, "ai.usage.inputTokens", "ai.usage.promptTokens", "ai.usage.prompt_tokens", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens") as number | undefined;
+        const outputTokens = first(attrs, "ai.usage.outputTokens", "ai.usage.completionTokens", "ai.usage.completion_tokens", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens") as number | undefined;
 
         const eventId = first(attrs, "ai.telemetry.metadata.raindrop.eventId", "ai.telemetry.metadata.traceloop.association.properties.event_id", "traceloop.association.properties.event_id", "traceloop.association.properties.traceloop.association.properties.event_id") as string | undefined;
         const eventName = first(attrs, "ai.telemetry.metadata.raindrop.eventName", "ai.telemetry.metadata.traceloop.association.properties.event_name", "traceloop.association.properties.event_name", "traceloop.association.properties.traceloop.association.properties.event_name") as string | undefined;
