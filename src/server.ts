@@ -384,6 +384,15 @@ function demoChatHtml(): string {
 export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
+
+  // Workshop is a local control plane with UI actions that can launch local
+  // agents. Do not allow a remote page to frame the UI and drive those actions.
+  app.use((_req, res, next) => {
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+    res.setHeader("X-Frame-Options", "DENY");
+    next();
+  });
+
   const wss = new WebSocketServer({
     server,
     path: "/ws",
