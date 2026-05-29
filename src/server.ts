@@ -1735,10 +1735,10 @@ export async function createServer(port: number) {
 
   app.put("/api/agents", (req, res) => {
     try {
-      saveAgentsConfig(req.body);
+      const agents = saveAgentsConfig(req.body);
       // Notify any open Workshop UIs that the registry changed so the
       // "Local Agent" replay button un-greys without a page reload.
-      broadcast("agents_updated", { agents: req.body });
+      broadcast("agents_updated", { agents });
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: String(err) });
