@@ -139,6 +139,22 @@ export interface QueryTracesResult {
 }
 
 const BLOCKED_QUERY_RE = /\b(attach|detach|insert|update|delete|replace|drop|alter|create|pragma|vacuum|reindex|analyze)\b/i;
+const OUTPUT_AMPLIFYING_SQL_FUNCTIONS = [
+  "randomblob",
+  "zeroblob",
+  "printf",
+  "format",
+  "hex",
+  "quote",
+  "group_concat",
+  "json_group_array",
+  "json_group_object",
+].join("|");
+const BLOCKED_EXPENSIVE_QUERY_RE = new RegExp(
+  `(?:\\b(${OUTPUT_AMPLIFYING_SQL_FUNCTIONS})\\b|["'\`](${OUTPUT_AMPLIFYING_SQL_FUNCTIONS})["'\`]|\\[(${OUTPUT_AMPLIFYING_SQL_FUNCTIONS})\\])\\s*\\(`,
+  "i",
+);
+const RECURSIVE_CTE_RE = /\bwith\s+recursive\b/i;
 
 // `messages` holds legacy Workshop chat history, not trace data. Block it so
 // query_traces can't be used as a side-channel to read the user's
@@ -164,6 +180,12 @@ function assertReadOnlyTraceQuery(sql: string): string {
   }
   if (BLOCKED_QUERY_RE.test(withoutTrailingSemicolon)) {
     throw new Error("query contains a blocked SQL keyword");
+  }
+  if (RECURSIVE_CTE_RE.test(withoutTrailingSemicolon)) {
+    throw new Error("query_traces does not allow recursive CTEs");
+  }
+  if (BLOCKED_EXPENSIVE_QUERY_RE.test(withoutTrailingSemicolon)) {
+    throw new Error("query_traces does not allow SQL functions that can amplify output size");
   }
   if (BLOCKED_TABLES_RE.test(withoutTrailingSemicolon)) {
     throw new Error("query_traces cannot read the messages table (Workshop chat history is not trace data)");
