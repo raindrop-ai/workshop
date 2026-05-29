@@ -13,6 +13,7 @@ import { readWorkshopRun, readWorkshopSpans } from "./helpers";
 // is the source of truth — if it changes, update these numbers in lock
 // step with that change.
 const FIXTURE_RUN_ID = "00000000000000000000000000000001";
+const FIXTURE_CONVO_SIBLING_RUN_ID = "00000000000000000000000000000002";
 const FIXTURE_EVENT_NAME = "code-agent";
 const FIXTURE_SPAN_COUNT = 6;
 
@@ -28,6 +29,38 @@ async function seedFixtures(workshopUrl: string) {
 async function clearWorkshop(workshopUrl: string) {
   const res = await fetch(`${workshopUrl}/api/clear`, { method: "POST" });
   expect(res.ok, `POST /api/clear -> ${res.status}`).toBe(true);
+}
+
+async function saveRun(workshopUrl: string, runId: string) {
+  const detailRes = await fetch(`${workshopUrl}/api/runs/detail/${encodeURIComponent(runId)}`);
+  expect(detailRes.ok, `GET /api/runs/detail/${runId} -> ${detailRes.status}`).toBe(true);
+  const detail = await detailRes.json() as {
+    run: {
+      id: string;
+      event_name?: string | null;
+      name?: string | null;
+      user_id?: string | null;
+      convo_id?: string | null;
+      started_at: number;
+    };
+  };
+  const run = detail.run;
+  const saveRes = await fetch(`${workshopUrl}/api/saved-runs/events/${encodeURIComponent(runId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: run.id,
+      event_name: run.event_name ?? run.name ?? run.id.slice(0, 12),
+      user_id: run.user_id ?? null,
+      convo_id: run.convo_id ?? null,
+      timestamp: new Date(run.started_at).toISOString(),
+      user_input: "Fix the typo in README.md",
+      assistant_output: null,
+      saved_at: Date.now(),
+      source: "local",
+    }),
+  });
+  expect(saveRes.ok, `PUT /api/saved-runs/events/${runId} -> ${saveRes.status}`).toBe(true);
 }
 
 // Each test gets a clean slate. Tests that need fixtures call seedFixtures
@@ -189,6 +222,41 @@ test("workshop UI: switching between runs preserves each run's span tree", async
   await expect.poll(async () => rows.count(), { timeout: 10_000 }).toBeGreaterThanOrEqual(spansA.length);
   await expect(page.locator(`[data-span-row="${spansA[0].id}"]`)).toBeVisible();
   await expect(page.locator(`[data-span-row="${spansB[0].id}"]`)).toHaveCount(0);
+});
+
+test("workshop UI: saved conversation open preserves saved/unsaved route targets", async ({ page, workshop }) => {
+  await seedFixtures(workshop.url);
+  await saveRun(workshop.url, FIXTURE_RUN_ID);
+
+  await page.goto(`${workshop.url}/saved/${FIXTURE_RUN_ID}/convo`);
+  await expect(page.getByRole("button", { name: /^convo$/i })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/^conversation$/i)).toBeVisible({ timeout: 10_000 });
+
+  const openButtons = page.getByRole("button", { name: /^open →$/i });
+  await expect(openButtons).toHaveCount(2);
+
+  const openSavedTurn = openButtons.first();
+  await expect(openSavedTurn).toBeVisible({ timeout: 5_000 });
+  await openSavedTurn.click();
+  await expect(page).toHaveURL(new RegExp(`/saved/${FIXTURE_RUN_ID}(?:[/?#]|$)`));
+
+  await page.goto(`${workshop.url}/saved/${FIXTURE_RUN_ID}/convo`);
+  await expect(openButtons).toHaveCount(2);
+  await openButtons.nth(1).click();
+  await expect(page).toHaveURL(new RegExp(`/runs/${FIXTURE_CONVO_SIBLING_RUN_ID}(?:[/?#]|$)`));
+});
+
+test("workshop UI: saved conversation open keeps saved sibling turns in saved route", async ({ page, workshop }) => {
+  await seedFixtures(workshop.url);
+  await saveRun(workshop.url, FIXTURE_RUN_ID);
+  await saveRun(workshop.url, FIXTURE_CONVO_SIBLING_RUN_ID);
+
+  await page.goto(`${workshop.url}/saved/${FIXTURE_RUN_ID}/convo`);
+  const openButtons = page.getByRole("button", { name: /^open →$/i });
+  await expect(openButtons).toHaveCount(2);
+
+  await openButtons.nth(1).click();
+  await expect(page).toHaveURL(new RegExp(`/saved/${FIXTURE_CONVO_SIBLING_RUN_ID}(?:[/?#]|$)`));
 });
 
 test("workshop UI: deleting a run via API removes it from the sidebar", async ({ page, workshop }) => {
