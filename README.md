@@ -44,12 +44,38 @@ That's it. Traces stream into the UI the moment your agent runs.
 
 - **Live streamed traces.** Every token, tool call, and span streams into
   Workshop as it happens. No polling, no refreshing.
+- **Observer mode.** Run a second local OpenCode process as an LLM-as-judge
+  that watches active traces, reads the Workshop SQLite database, and writes
+  corrective steering events back into the UI.
 - **Coding-agent integration.** Claude Code reads your traces, writes evals
   against your codebase, and fixes what's broken.
 - **Self-healing eval loop.** Claude writes the eval, runs your agent, sees the
   failure, fixes the code, and re-runs — until every assertion passes.
 - **Local replay.** `/setup-agent-replay` scaffolds an HTTP endpoint that replays a
   production trace against your real agent code.
+
+## Observe and steer agents
+
+Workshop includes an OpenCode observer example that runs beside the main UI:
+
+```bash
+cd examples/opencode-observer-agent
+bun install
+bun run dev
+```
+
+The observer watches `opencode_session` runs, launches `openai/gpt-5.5-pro`
+judge passes when new agent activity appears, queries
+`~/.raindrop/raindrop_workshop.db` with SQLite, and decides whether the active
+agent or subagent needs corrective steering.
+
+Observer traces are hidden from the main Runs list. Open a run and use:
+
+- **Observer** for high-signal corrective actions only.
+- **Observer Debug** for compact observer inputs, outputs, and tool calls.
+
+The nudge/control bridge can be mocked locally; steering decisions are written
+to `POST /api/steering/events` so they show up in Workshop.
 
 ## Compatible with everything
 

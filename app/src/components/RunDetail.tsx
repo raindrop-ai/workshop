@@ -4,7 +4,9 @@ import {
   runPath,
   runViewFromPathname,
   traceConvoPath,
+  traceObserverDebugPath,
   tracePath,
+  traceObserverPath,
   traceSpanPath,
   traceSpansPath,
   type TraceRouteBase,
@@ -21,7 +23,7 @@ import { RemoteConvoLoader } from "../pages/SearchPage";
 import { RotateCcw, Bookmark, Pencil, ChevronDown, ArrowDown, ChevronRight, MessageCircle, SearchX } from "lucide-react";
 import { LocalAgentSetupCTA, SetupReplayModal } from "./LocalAgentSetupCTA";
 import { C } from "../utils/colors";
-import { fmt, isActive } from "../utils/helpers";
+import { fmt, isActive, tryJson } from "../utils/helpers";
 import { parseReplayMetadata } from "../utils/types";
 import type { Run, Span, LiveEvent, SubAgent } from "../utils/types";
 import { saveEvent, removeSavedEvent, updateSavedEvent, isEventSaved, getSavedEvents, SavePopover, type SavedAnnotationPreview, type SavedEvent } from "../pages/SavedPage";
@@ -30,8 +32,11 @@ import { AnnotationCreatePopover, TraceAnnotations } from "./TraceAnnotations";
 import { useAnnotations } from "../hooks/use-annotations";
 import type { Annotation, AnnotationKind } from "../hooks/use-annotations";
 import { useAgentForEvent } from "../hooks/use-agents";
+import { useSteering } from "../hooks/use-steering";
 import { useWorkshopEvent } from "../hooks/use-workshop-ws";
 import { getCostBreakdown, fmtCost } from "../utils/costs";
+import type { RunSteeringData, SteeringEvent } from "../api/steering";
+import { getRunDetail } from "../api/runs";
 
 const TOKEN_NUMBER_FLOW_TIMING = {
   spinTiming: { duration: 450, easing: "ease-out" },
@@ -1011,6 +1016,576 @@ function TraceNotFound({ runId, backPath }: { runId: string; backPath: string })
   );
 }
 
+function parseToolInput(value: string | null | undefined): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function eventActionLabel(action: SteeringEvent["action"]): string {
+  switch (action) {
+    case "system_prompt_update": return "Prompt update";
+    case "stop": return "Stop";
+    case "restart": return "Restart";
+    case "continue": return "Continue";
+    case "note": return "Note";
+    case "nudge":
+    default: return "Nudge";
+  }
+}
+
+function formatUnknown(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return tryJson(value) ?? value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function ObserverPayloadBlock({
+  title,
+  value,
+  defaultOpen = true,
+}: {
+  title: string;
+  value: unknown;
+  defaultOpen?: boolean;
+}) {
+  const text = formatUnknown(value);
+  if (!text.trim()) return null;
+  return (
+    <details open={defaultOpen} className="rounded-md overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.07)", background: "rgba(0,0,0,0.16)" }}>
+      <summary className="cursor-pointer px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide select-none" style={{ color: C.fg0, background: "rgba(255,255,255,0.035)" }}>
+        {title}
+      </summary>
+      <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words p-2.5 overflow-auto" style={{ color: C.fg2, maxHeight: 520 }}>
+        {text}
+      </pre>
+    </details>
+  );
+}
+
+function ObserverMessagesBlock({ span }: { span: Span }) {
+  if (span.normalized?.kind !== "llm" || span.normalized.messages.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: C.fg0 }}>Parsed messages fed to observer</div>
+      {span.normalized.messages.map((message, index) => (
+        <div key={`${span.id}-message-${index}`} className="rounded-md overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.07)", background: "rgba(0,0,0,0.16)" }}>
+          <div className="px-2.5 py-1.5 text-[10px] font-mono" style={{ color: message.role === "system" ? C.green : message.role === "tool" ? "#d1a766" : C.fg1, background: "rgba(255,255,255,0.035)" }}>
+            {message.role}
+            {message.toolCallId ? ` · ${message.toolCallId}` : ""}
+          </div>
+          <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words p-2.5 overflow-auto" style={{ color: C.fg2, maxHeight: 420 }}>
+            {message.content}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function compactText(value: unknown, limit = 1200): string {
+  const raw = formatUnknown(value).trim();
+  if (!raw) return "";
+  const text = raw
+    .replace(/^"|"$/g, "")
+    .replace(/\\"/g, '"')
+    .replace(/\\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+}
+
+function spanAttributes(span: Span): Record<string, unknown> {
+  if (!span.attributes) return {};
+  try {
+    const parsed = JSON.parse(span.attributes);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function firstAttribute(span: Span, keys: string[]): unknown {
+  const attrs = spanAttributes(span);
+  for (const key of keys) {
+    const value = attrs[key];
+    if (value !== undefined && value !== null && compactText(value, 1).length > 0) return value;
+  }
+  return null;
+}
+
+function observerSpanInput(span: Span, limit = 1600): string {
+  if (span.span_type === "TOOL_CALL") return toolArgsSummary(span);
+  return compactText(
+    span.input_payload ??
+      firstAttribute(span, ["gen_ai.system", "ai.prompt", "ai.input", "input"]),
+    limit,
+  );
+}
+
+function observerSpanOutput(span: Span, limit = 1600): string {
+  if (span.span_type === "TOOL_CALL") return "";
+  return compactText(
+    span.output_payload ??
+      firstAttribute(span, ["ai.response.text", "gen_ai.response.text", "gen_ai.completion", "ai.output", "output"]),
+    limit,
+  );
+}
+
+function toolArgsSummary(span: Span): string {
+  const tool = span.normalized?.kind === "tool" ? span.normalized : null;
+  const args = tool?.args ?? span.input_payload ?? firstAttribute(span, ["ai.toolCall.args"]);
+  if (!args) return "";
+  if (typeof args === "object" && args !== null) {
+    const obj = args as Record<string, unknown>;
+    const preferred = ["description", "command", "query", "path", "file", "workdir"];
+    const parts = preferred
+      .filter((key) => obj[key] !== undefined && obj[key] !== null)
+      .map((key) => `${key}: ${compactText(obj[key], 220)}`);
+    if (parts.length > 0) return parts.join("\n");
+  }
+  return compactText(args, 700);
+}
+
+function ObserverCompactSpan({ span }: { span: Span }) {
+  const isTool = span.span_type === "TOOL_CALL";
+  const isLlm = Boolean(span.span_type?.includes("LLM"));
+  const input = observerSpanInput(span);
+  const output = observerSpanOutput(span);
+  if (!isTool && !isLlm && !input && !output) return null;
+  return (
+    <div className="rounded-md p-3" style={{ background: "rgba(0,0,0,0.14)", border: "1px solid rgba(255,255,255,0.06)" }}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded" style={{ color: isTool ? "#d1a766" : C.green, background: "rgba(255,255,255,0.06)" }}>
+          {isTool ? "Tool" : isLlm ? "Judge" : "Span"}
+        </span>
+        <span className="text-[11px] font-mono truncate" style={{ color: C.fg3 }}>{span.name}</span>
+        {span.status === "ERROR" && <span className="text-[10px]" style={{ color: C.red }}>error</span>}
+        <span className="ml-auto text-[10px] font-mono" style={{ color: C.fg0 }}>{fmt(span.duration_ms)}</span>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {input && (
+          <div>
+            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: C.fg0 }}>{isTool ? "Args" : "Input"}</div>
+            <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words rounded p-2" style={{ color: C.fg2, background: "rgba(0,0,0,0.18)", maxHeight: 260, overflow: "auto" }}>{input}</pre>
+          </div>
+        )}
+        {output && (
+          <div>
+            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: C.fg0 }}>Output</div>
+            <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words rounded p-2" style={{ color: C.fg2, background: "rgba(0,0,0,0.18)", maxHeight: 260, overflow: "auto" }}>{output}</pre>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function payloadContainsCorrectiveAction(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const lower = value.toLowerCase();
+  return (
+    lower.includes("/api/steering/events") ||
+    lower.includes('"action":"nudge"') ||
+    lower.includes('"action": "nudge"') ||
+    lower.includes('"action":"system_prompt_update"') ||
+    lower.includes('"action": "system_prompt_update"') ||
+    lower.includes('"action":"stop"') ||
+    lower.includes('"action": "stop"') ||
+    lower.includes('"action":"restart"') ||
+    lower.includes('"action": "restart"')
+  );
+}
+
+function observerActivationReason(spans: Span[]): string | null {
+  const llm = spans.find((span) => span.span_type?.includes("LLM") && span.input_payload?.includes("Activation reason:"));
+  if (!llm?.input_payload) return null;
+  const match = llm.input_payload.match(/Activation reason:\s*([^\n"]+)/);
+  return match?.[1]?.trim() ?? null;
+}
+
+function observerOutputSummary(spans: Span[]): string | null {
+  const llm = [...spans].reverse().find((span) => span.span_type?.includes("LLM") && observerSpanOutput(span, 4000));
+  if (!llm) return null;
+  const text = observerSpanOutput(llm, 4000)
+    .replace(/^#+\s*/gm, "")
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 260 ? `${text.slice(0, 260)}...` : text;
+}
+
+function ObserverTraceCard({ observerRun, prominent = false, defaultOpen = false, raw = false }: { observerRun: Run; prominent?: boolean; defaultOpen?: boolean; raw?: boolean }) {
+  const [detail, setDetail] = useState<{ spans: Span[]; liveEvents: LiveEvent[] } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      getRunDetail(observerRun.id)
+        .then((data) => { if (!cancelled) setDetail({ spans: data.spans, liveEvents: data.liveEvents ?? [] }); })
+        .catch(() => { if (!cancelled) setDetail(null); });
+    };
+    load();
+    const interval = window.setInterval(load, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [observerRun.id]);
+
+  const spans = detail?.spans ?? [];
+  const liveEvents = detail?.liveEvents ?? [];
+  const toolCount = spans.filter((span) => span.span_type === "TOOL_CALL").length;
+  const errorCount = spans.filter((span) => span.status === "ERROR").length;
+  const activationReason = observerActivationReason(spans);
+  const summary = observerOutputSummary(spans);
+  const hasCorrectiveAction = spans.some((span) => payloadContainsCorrectiveAction(observerSpanInput(span)) || payloadContainsCorrectiveAction(observerSpanOutput(span)));
+
+  return (
+    <details open={defaultOpen} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${prominent ? "rgba(102,170,187,0.28)" : C.border}`, background: prominent ? "rgba(102,170,187,0.045)" : "rgba(255,255,255,0.022)" }}>
+      <summary className="cursor-pointer px-4 py-3 flex items-center justify-between gap-3 select-none" style={{ borderBottom: `1px solid ${C.border}` }}>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wide font-medium" style={{ color: prominent ? C.green : C.fg0 }}>
+              {prominent ? "Observer action trace" : "Observer trace"}
+            </span>
+            {hasCorrectiveAction && <span className="text-[9px] uppercase tracking-wide px-1.5 rounded" style={{ color: C.green, background: "rgba(102,170,187,0.12)" }}>action</span>}
+            {errorCount > 0 && <span className="text-[9px] uppercase tracking-wide px-1.5 rounded" style={{ color: C.red, background: "rgba(235,20,20,0.12)" }}>error</span>}
+          </div>
+          <div className="mt-1 text-[12px] truncate" style={{ color: C.fg3 }}>
+            {activationReason ?? summary ?? `${observerRun.event_name ?? observerRun.name ?? "observer"} · ${observerRun.id.slice(0, 8)}`}
+          </div>
+        </div>
+        <div className="text-[10px] font-mono flex-shrink-0" style={{ color: C.fg0 }}>
+          {observerRun.finished ? "done" : "running"} · {toolCount} tools · {fmt(observerRun.last_updated_at - observerRun.started_at)}
+        </div>
+      </summary>
+      <div className="p-3 space-y-2">
+        {summary && (
+          <div className="text-[11px] leading-relaxed rounded-md p-2.5" style={{ color: C.fg2, background: "rgba(0,0,0,0.14)", border: "1px solid rgba(255,255,255,0.05)" }}>
+            {summary}
+          </div>
+        )}
+        {spans.length === 0 && liveEvents.length === 0 ? (
+          <div className="text-[11px]" style={{ color: C.fg0 }}>Waiting for observer reasoning...</div>
+        ) : raw ? spans.map((span) => {
+          const isTool = span.span_type === "TOOL_CALL";
+          const normalizedTool = span.normalized?.kind === "tool" ? span.normalized : null;
+          return (
+            <div key={span.id} className="rounded-md p-3" style={{ background: "rgba(0,0,0,0.16)", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded" style={{ color: isTool ? "#d1a766" : C.green, background: "rgba(255,255,255,0.06)" }}>
+                  {isTool ? "Tool" : span.span_type?.includes("LLM") ? "Judge" : "Span"}
+                </span>
+                <span className="text-[11px] font-mono truncate" style={{ color: C.fg3 }}>{span.name}</span>
+                {span.status === "ERROR" && <span className="text-[10px]" style={{ color: C.red }}>error</span>}
+                <span className="ml-auto text-[10px] font-mono" style={{ color: C.fg0 }}>{fmt(span.duration_ms)}</span>
+              </div>
+              <div className="space-y-2">
+                <ObserverMessagesBlock span={span} />
+                <ObserverPayloadBlock title={isTool ? "Tool input / command args" : "Raw input payload fed to observer"} value={span.input_payload} defaultOpen={true} />
+                {normalizedTool && <ObserverPayloadBlock title="Parsed tool args" value={normalizedTool.args} defaultOpen={true} />}
+                {normalizedTool && <ObserverPayloadBlock title="Parsed tool result / what observer read" value={normalizedTool.result} defaultOpen={true} />}
+                <ObserverPayloadBlock title={isTool ? "Raw tool output / what observer read" : "Raw observer output payload"} value={span.output_payload} defaultOpen={true} />
+                <ObserverPayloadBlock title="Raw span attributes" value={span.attributes} defaultOpen={false} />
+              </div>
+            </div>
+          );
+        }) : spans.map((span) => <ObserverCompactSpan key={span.id} span={span} />)}
+        {liveEvents.length > 0 && (
+          <div className="rounded-md p-3" style={{ background: "rgba(0,0,0,0.16)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="text-[10px] font-semibold uppercase tracking-wide mb-2" style={{ color: C.fg0 }}>Observer live events</div>
+            <div className="space-y-2">
+              {liveEvents.map((event) => (
+                <ObserverPayloadBlock
+                  key={event.id}
+                  title={`${event.type}${event.span_id ? ` · ${event.span_id.slice(0, 8)}` : ""}`}
+                  value={{ content: event.content, metadata: event.metadata, timestamp: event.timestamp }}
+                  defaultOpen={true}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function ObserverPanel({
+  run,
+  spans,
+  subAgents,
+  steering,
+  routeBase,
+  onDiveIn,
+}: {
+  run: Run;
+  spans: Span[];
+  subAgents: SubAgent[];
+  steering: RunSteeringData;
+  routeBase?: TraceRouteBase;
+  onDiveIn: (rootSpanId: string) => void;
+}) {
+  const navigate = useNavigate();
+  const spansById = useMemo(() => new Map(spans.map((span) => [span.id, span])), [spans]);
+  const eventsBySubagent = useMemo(() => {
+    const map = new Map<string, SteeringEvent[]>();
+    for (const event of steering.events) {
+      const key = event.target_subagent_span_id ?? event.target_span_id ?? "__run__";
+      map.set(key, [...(map.get(key) ?? []), event]);
+    }
+    return map;
+  }, [steering.events]);
+
+  const runLevelEvents = eventsBySubagent.get("__run__") ?? [];
+  const observerRuns = steering.observerRuns.length > 0
+    ? steering.observerRuns
+    : steering.observerRunIds.map((id) => ({ id, name: null, event_name: "observer_agent_session" }) as Run);
+  const observerRunsWithEvents = useMemo(() => {
+    const ids = new Set(steering.events.map((event) => event.observer_run_id).filter(Boolean));
+    return observerRuns.filter((observerRun) => ids.has(observerRun.id));
+  }, [observerRuns, steering.events]);
+  const passiveObserverCount = Math.max(0, observerRuns.length - observerRunsWithEvents.length);
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto sb" style={{ padding: 16 }}>
+      <div className="max-w-5xl mx-auto space-y-4">
+        <div className="rounded-lg p-4" style={{ background: "rgba(255,255,255,0.035)", border: `1px solid ${C.border}` }}>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide font-medium mb-1" style={{ color: C.fg0 }}>Observer control plane</div>
+              <div className="text-[14px] font-semibold" style={{ color: C.fg4 }}>
+                {steering.events.length > 0 ? `${steering.events.length} corrective action${steering.events.length === 1 ? "" : "s"}` : "No observer action taken"}
+              </div>
+              <div className="text-[11px] mt-1 leading-relaxed" style={{ color: C.fg1 }}>
+                Observer passes stay quiet unless they detect drift, repeated failures, or wrong-direction work. Corrective nudges and prompt updates appear here.
+              </div>
+            </div>
+            <div className="text-right text-[10px] font-mono" style={{ color: C.fg0 }}>
+              {passiveObserverCount > 0 ? `${passiveObserverCount} quiet pass${passiveObserverCount === 1 ? "" : "es"}` : `${observerRuns.length} observer pass${observerRuns.length === 1 ? "" : "es"}`}
+            </div>
+          </div>
+          {observerRunsWithEvents.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {observerRunsWithEvents.map((observerRun) => (
+                <button
+                  key={observerRun.id}
+                  className="rounded-md px-2.5 py-1 text-[11px] transition-colors hover:bg-white/10"
+                  style={{ color: C.fg3, background: "rgba(255,255,255,0.05)", border: `1px solid ${C.border}` }}
+                  onClick={() => navigate(routeBase ? tracePath(routeBase, observerRun.id) : runPath(observerRun.id))}
+                  title={observerRun.id}
+                >
+                  {observerRun.event_name ?? observerRun.name ?? "observer"} · {observerRun.id.slice(0, 8)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {steering.events.length === 0 && (
+          <div className="rounded-lg p-8 text-center" style={{ color: C.fg1, border: `1px dashed ${C.border}` }}>
+            No corrective observer action for this run.
+            {observerRuns.length > 0 && (
+              <div className="mt-2 text-[11px]" style={{ color: C.fg0 }}>
+                {observerRuns.length} quiet observer pass{observerRuns.length === 1 ? "" : "es"} hidden.
+              </div>
+            )}
+          </div>
+        )}
+
+        {observerRunsWithEvents.length > 0 && (
+          <div className="space-y-3">
+            {observerRunsWithEvents.map((observerRun) => (
+              <ObserverTraceCard key={observerRun.id} observerRun={observerRun} prominent />
+            ))}
+          </div>
+        )}
+
+        {subAgents.length === 0 && steering.events.length > 0 && (
+          <div className="rounded-lg p-8 text-center" style={{ color: C.fg1, border: `1px dashed ${C.border}` }}>
+            No subagents detected in this run yet.
+          </div>
+        )}
+
+        {subAgents.map((agent, index) => {
+          const root = spansById.get(agent.root_span_id);
+          const input = parseToolInput(root?.input_payload);
+          const prompt = typeof input?.prompt === "string" ? input.prompt : null;
+          const description = typeof input?.description === "string" ? input.description : agent.name;
+          const events = [
+            ...(eventsBySubagent.get(agent.root_span_id) ?? []),
+            ...steering.events.filter((event) => event.target_span_id && agent.span_ids.includes(event.target_span_id) && event.target_subagent_span_id !== agent.root_span_id),
+          ].sort((a, b) => a.created_at - b.created_at);
+          const latestSpan = spans
+            .filter((span) => agent.span_ids.includes(span.id) && span.id !== agent.root_span_id)
+            .sort((a, b) => (b.start_time_ms ?? 0) - (a.start_time_ms ?? 0))[0];
+
+          return (
+            <div key={agent.root_span_id} className="rounded-lg overflow-hidden" style={{ background: "rgba(255,255,255,0.025)", border: `1px solid ${C.border}` }}>
+              <div className="p-4" style={{ borderBottom: `1px solid ${C.border}` }}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <div className="text-[10px] uppercase tracking-wide font-medium" style={{ color: C.fg0 }}>Subagent {index + 1}</div>
+                    <button className="mt-1 text-left text-[14px] font-semibold hover:underline" style={{ color: C.fg4 }} onClick={() => onDiveIn(agent.root_span_id)}>
+                      {description}
+                    </button>
+                    {prompt && (
+                      <div className="mt-2 text-[11px] leading-relaxed" style={{ color: C.fg1 }}>
+                        {prompt}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 text-right text-[10px] font-mono space-y-1" style={{ color: C.fg0 }}>
+                    <div>{agent.status.toLowerCase()}</div>
+                    <div>{agent.tool_count} tools · {agent.llm_count} llm</div>
+                    {agent.duration_ms > 0 && <div>{fmt(agent.duration_ms)}</div>}
+                  </div>
+                </div>
+                {latestSpan && (
+                  <div className="mt-3 text-[10px] font-mono truncate" style={{ color: C.fg0 }}>
+                    latest: {latestSpan.status === "ERROR" ? "error in " : ""}{latestSpan.name}
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 space-y-3">
+                {events.length === 0 ? (
+                  null
+                ) : events.map((event) => (
+                  <div key={event.id} className="rounded-md p-3" style={{ background: "rgba(102,170,187,0.055)", border: "1px solid rgba(102,170,187,0.18)" }}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: C.green }}>{eventActionLabel(event.action)}</span>
+                      <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>{event.status.replace(/_/g, " ")}</span>
+                      {event.confidence !== null && <span className="text-[10px] font-mono" style={{ color: C.fg0 }}>{Math.round(event.confidence * 100)}%</span>}
+                      <span className="ml-auto text-[10px] font-mono" style={{ color: C.fg0 }}>{new Date(event.created_at).toLocaleTimeString()}</span>
+                    </div>
+                    {event.message && <div className="text-[12px] leading-relaxed" style={{ color: C.fg3 }}>{event.message}</div>}
+                    {event.reason && <div className="mt-1 text-[11px] leading-relaxed" style={{ color: C.fg1 }}>{event.reason}</div>}
+                    {(event.before_prompt || event.after_prompt) && (
+                      <div className="mt-3 grid gap-2 md:grid-cols-2">
+                        {event.before_prompt && (
+                          <div>
+                            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: C.fg0 }}>Before</div>
+                            <pre className="text-[10px] whitespace-pre-wrap rounded p-2" style={{ color: C.fg1, background: "rgba(0,0,0,0.24)" }}>{event.before_prompt}</pre>
+                          </div>
+                        )}
+                        {event.after_prompt && (
+                          <div>
+                            <div className="text-[9px] uppercase tracking-wide mb-1" style={{ color: C.fg0 }}>After</div>
+                            <pre className="text-[10px] whitespace-pre-wrap rounded p-2" style={{ color: C.fg3, background: "rgba(0,0,0,0.24)" }}>{event.after_prompt}</pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {runLevelEvents.length > 0 && (
+          <div className="rounded-lg p-4" style={{ border: `1px solid ${C.border}` }}>
+            <div className="text-[10px] uppercase tracking-wide mb-3" style={{ color: C.fg0 }}>Run-level observer actions</div>
+            <div className="space-y-2">
+              {runLevelEvents.map((event) => (
+                <div key={event.id} className="text-[12px] leading-relaxed" style={{ color: C.fg2 }}>
+                  <span style={{ color: C.green }}>{eventActionLabel(event.action)}</span>
+                  {event.message ? `: ${event.message}` : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ObserverDebugPanel({
+  run,
+  steering,
+  routeBase,
+}: {
+  run: Run;
+  steering: RunSteeringData;
+  routeBase?: TraceRouteBase;
+}) {
+  const navigate = useNavigate();
+  const observerRuns = steering.observerRuns.length > 0
+    ? steering.observerRuns
+    : steering.observerRunIds.map((id) => ({ id, name: null, event_name: "observer_agent_session", started_at: run.started_at, last_updated_at: run.last_updated_at }) as Run);
+  const actionObserverIds = new Set(steering.events.map((event) => event.observer_run_id).filter(Boolean));
+  const quietCount = observerRuns.filter((observerRun) => !actionObserverIds.has(observerRun.id)).length;
+
+  return (
+    <div className="flex-1 min-h-0 overflow-auto sb" style={{ padding: 16 }}>
+      <div className="max-w-5xl mx-auto space-y-4">
+        <div className="rounded-lg p-4" style={{ background: "rgba(255,255,255,0.035)", border: `1px solid ${C.border}` }}>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide font-medium mb-1" style={{ color: C.fg0 }}>Observer debug</div>
+              <div className="text-[14px] font-semibold" style={{ color: C.fg4 }}>
+                {observerRuns.length} pass{observerRuns.length === 1 ? "" : "es"} linked
+              </div>
+              <div className="text-[11px] mt-1 leading-relaxed" style={{ color: C.fg1 }}>
+                Debug view shows compact observer inputs, outputs, and tool calls. The main Observer tab only shows corrective actions.
+              </div>
+            </div>
+            <div className="text-right text-[10px] font-mono space-y-1" style={{ color: C.fg0 }}>
+              <div>{steering.events.length} action event{steering.events.length === 1 ? "" : "s"}</div>
+              <div>{quietCount} quiet pass{quietCount === 1 ? "" : "es"}</div>
+            </div>
+          </div>
+          {observerRuns.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {observerRuns.map((observerRun) => (
+                <button
+                  key={observerRun.id}
+                  className="rounded-md px-2.5 py-1 text-[11px] transition-colors hover:bg-white/10"
+                  style={{ color: actionObserverIds.has(observerRun.id) ? C.green : C.fg3, background: "rgba(255,255,255,0.05)", border: `1px solid ${C.border}` }}
+                  onClick={() => navigate(routeBase ? tracePath(routeBase, observerRun.id) : runPath(observerRun.id))}
+                  title={observerRun.id}
+                >
+                  {actionObserverIds.has(observerRun.id) ? "action" : "quiet"} · {observerRun.id.slice(0, 8)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {observerRuns.length === 0 ? (
+          <div className="rounded-lg p-8 text-center" style={{ color: C.fg1, border: `1px dashed ${C.border}` }}>
+            No observer pass has been linked to this run yet.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {observerRuns.map((observerRun) => (
+              <ObserverTraceCard
+                key={observerRun.id}
+                observerRun={observerRun}
+                prominent={actionObserverIds.has(observerRun.id)}
+                defaultOpen={true}
+                raw={false}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function RunDetail({ runId, routeBase, initialData, isReplay, source, onForkStarted }: {
   runId: string;
   /** URL namespace that owns this detail view. Omit for embedded compare/replay panes. */
@@ -1029,12 +1604,12 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
   const { pathname } = useLocation();
   const usesRouteState = routeBase !== undefined;
   const runView = usesRouteState ? runViewFromPathname(pathname) : "overview";
-  const tab: "chat" | "tree" | "convo" =
+  const tab: "chat" | "tree" | "convo" | "observer" | "observer-debug" =
     usesRouteState
-      ? runView === "convo" ? "convo" : runView === "spans" || runView === "span" ? "tree" : "chat"
+      ? runView === "observer-debug" ? "observer-debug" : runView === "observer" ? "observer" : runView === "convo" ? "convo" : runView === "spans" || runView === "span" ? "tree" : "chat"
       : "chat";
   const routeSelectedSpanId = routeSpanId ? decodeURIComponent(routeSpanId) : null;
-  const [localTab, setLocalTab] = useState<"chat" | "tree" | "convo">("chat");
+  const [localTab, setLocalTab] = useState<"chat" | "tree" | "convo" | "observer" | "observer-debug">("chat");
   const [localSelectedSpanId, setLocalSelectedSpanId] = useState<string | null>(null);
   const activeTab = usesRouteState ? tab : localTab;
   const selectedSpanId = usesRouteState ? routeSelectedSpanId : localSelectedSpanId;
@@ -1044,6 +1619,7 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>(initialData?.liveEvents ?? []);
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const annotationsApi = useAnnotations(runId);
+  const steering = useSteering(runId);
   const autoSavedAnnotationIdsRef = useRef<Set<string>>(new Set());
   const stickToBottomContextRef = useRef<StickToBottomContext | null>(null);
 
@@ -1090,6 +1666,14 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
   const goConvo = useCallback(() => {
     if (routeBase) navigate(traceConvoPath(routeBase, runId));
     else setLocalTab("convo");
+  }, [navigate, routeBase, runId]);
+  const goObserver = useCallback(() => {
+    if (routeBase) navigate(traceObserverPath(routeBase, runId));
+    else setLocalTab("observer");
+  }, [navigate, routeBase, runId]);
+  const goObserverDebug = useCallback(() => {
+    if (routeBase) navigate(traceObserverDebugPath(routeBase, runId));
+    else setLocalTab("observer-debug");
   }, [navigate, routeBase, runId]);
   const selectSpan = useCallback(
     (spanId: string | null) => {
@@ -1365,11 +1949,28 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
       <div className="flex-shrink-0 flex" style={{ borderBottom: `1px solid ${C.border}`, paddingLeft: 16 }}>
         <button style={tabStyle("chat")} onClick={goOverview}>Overview</button>
         <button style={tabStyle("tree")} onClick={goSpans}>Span Tree</button>
+        <button style={tabStyle("observer")} onClick={goObserver}>Observer</button>
+        <button style={tabStyle("observer-debug")} onClick={goObserverDebug}>Observer Debug</button>
         {run.convo_id && (
           <button style={tabStyle("convo")} onClick={goConvo}>Convo</button>
         )}
       </div>
-      {activeTab === "tree" ? (
+      {activeTab === "observer-debug" ? (
+        <ObserverDebugPanel
+          run={run}
+          steering={steering}
+          routeBase={routeBase}
+        />
+      ) : activeTab === "observer" ? (
+        <ObserverPanel
+          run={run}
+          spans={spans}
+          subAgents={subAgents}
+          steering={steering}
+          routeBase={routeBase}
+          onDiveIn={setFocusedAgent}
+        />
+      ) : activeTab === "tree" ? (
         <div className="flex-1 relative min-h-0 overflow-auto sb" style={{ padding: 16 }}>
           <SpanTree
             spans={spans}

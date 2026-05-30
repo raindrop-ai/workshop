@@ -8,7 +8,7 @@ import { randomUUID } from "crypto";
 import { normalizeOtelId } from "./ids";
 import { parseOtlpRequest } from "./parse";
 import { decodeOtlpProtobuf } from "./otlp-protobuf";
-import { upsertRun, insertSpan, upsertEventSpan, findRunByEventId, adoptRunByEventId, getRuns, getRunWithSpans, getRunsByConvoId, clearAll, upsertLiveEvent, getLiveEvents, cacheSavedRun, getCachedRun, deleteCachedRun, deleteRun, getSpanMeta, getSpanById, getSpanPayloadColumn, getSpanContext, getMostRecentlyTouchedRun, getRunById, getRunOutline, listSpansFiltered, searchRun, tailLiveEvents, listSavedEvents, getSavedEvent, upsertSavedEvent, patchSavedEvent, deleteSavedEvent, listSavedFolders, ensureSavedFolder, deleteSavedFolder, queryTraces, type SavedEventRow } from "./db";
+import { upsertRun, insertSpan, upsertEventSpan, findRunByEventId, adoptRunByEventId, getRuns, getRunWithSpans, getRunsByConvoId, clearAll, upsertLiveEvent, getLiveEvents, cacheSavedRun, getCachedRun, deleteCachedRun, deleteRun, getSpanMeta, getSpanById, getSpanPayloadColumn, getSpanContext, getMostRecentlyTouchedRun, getRunById, getRunOutline, listSpansFiltered, searchRun, tailLiveEvents, listSavedEvents, getSavedEvent, upsertSavedEvent, patchSavedEvent, deleteSavedEvent, listSavedFolders, ensureSavedFolder, deleteSavedFolder, queryTraces, getObserverRunsForObservedRun, type SavedEventRow } from "./db";
 import { sliceSpanPayload } from "./payload-slice";
 import { detectSubAgents } from "./agents";
 import { applyProviderOptions, detectProvider, getProviderBaseURL, getProviderHeaders } from "./provider-options";
@@ -54,10 +54,23 @@ import {
   type AnnotationKind,
   type AnnotationSource,
 } from "./annotations";
+import {
+  createSteeringEvent,
+  listObserverRunsForRun,
+  listSteeringEventsForRun,
+  InvalidSteeringEventError,
+  type SteeringAction,
+  type SteeringStatus,
+} from "./steering";
 import { replayDefaultDemoTraces } from "./demo-traces";
 
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
   return value === "user" || value === "claude-code" || value === "codex" ? value : null;
+}
+
+function bodyString(body: Record<string, unknown>, snake: string, camel = snake): string | undefined {
+  const value = body[snake] ?? body[camel];
+  return typeof value === "string" ? value : undefined;
 }
 
 function getStringMetadata(
@@ -1603,6 +1616,78 @@ export async function createServer(port: number) {
     } catch (err) {
       if (err instanceof AnnotationNotFoundError) {
         res.status(404).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  app.get("/api/runs/:id/steering", (req, res) => {
+    const events = listSteeringEventsForRun(req.params.id);
+    const observerRunsByMetadata = getObserverRunsForObservedRun(req.params.id);
+    const observerRunIds = [
+      ...new Set([
+        ...observerRunsByMetadata.map((run: any) => run.id).filter(Boolean),
+        ...listObserverRunsForRun(req.params.id),
+      ]),
+    ];
+    res.json({
+      events,
+      observerRunIds,
+      observerRuns: observerRunIds
+        .map((id) => observerRunsByMetadata.find((run: any) => run.id === id) ?? getRunById(id))
+        .filter(Boolean),
+    });
+  });
+
+  app.post("/api/steering/events", (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const observedRunId = bodyString(body, "observed_run_id", "observedRunId");
+    const observerRunId = bodyString(body, "observer_run_id", "observerRunId");
+    const targetSpanId = bodyString(body, "target_span_id", "targetSpanId");
+    const targetSubagentSpanId = bodyString(body, "target_subagent_span_id", "targetSubagentSpanId");
+    const beforePrompt = bodyString(body, "before_prompt", "beforePrompt");
+    const afterPrompt = bodyString(body, "after_prompt", "afterPrompt");
+    const action = bodyString(body, "action") as SteeringAction | undefined;
+    const status = bodyString(body, "status") as SteeringStatus | undefined;
+    const confidence = typeof body.confidence === "number" ? body.confidence : undefined;
+
+    if (!observedRunId) {
+      res.status(400).json({ error: "observed_run_id required" });
+      return;
+    }
+    if (!action) {
+      res.status(400).json({ error: "action required" });
+      return;
+    }
+
+    try {
+      const event = createSteeringEvent({
+        observed_run_id: observedRunId,
+        observer_run_id: observerRunId,
+        target_span_id: targetSpanId,
+        target_subagent_span_id: targetSubagentSpanId,
+        action,
+        status,
+        message: bodyString(body, "message"),
+        before_prompt: beforePrompt,
+        after_prompt: afterPrompt,
+        reason: bodyString(body, "reason"),
+        source: bodyString(body, "source") ?? "external-observer",
+        confidence,
+      });
+      broadcast("steering", {
+        op: "insert",
+        observed_run_id: event.observed_run_id,
+        observer_run_id: event.observer_run_id,
+        target_span_id: event.target_span_id,
+        target_subagent_span_id: event.target_subagent_span_id,
+        event,
+      });
+      res.status(201).json({ ok: true, mocked: event.status === "mock_applied", event });
+    } catch (err) {
+      if (err instanceof InvalidSteeringEventError) {
+        res.status(400).json({ error: err.message });
         return;
       }
       throw err;

@@ -14,6 +14,7 @@ import { embeddedMigrationFiles, embeddedMigrationJournal } from "./db/migration
 import { VERSION } from "./version";
 
 const WORKSHOP_DB_PATH_ENV_VAR = "RAINDROP_WORKSHOP_DB_PATH";
+const OBSERVER_RUN_METADATA_RE = /"role"\s*:\s*"observer"|"observerKind"\s*:\s*"llm-as-judge"|"observedRunId"\s*:/;
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -338,6 +339,9 @@ export function countReplaysBySource(sourceRunId: string): number {
 
 export function deleteRun(runId: string) {
   getDrizzleDb().transaction((tx) => {
+    tx.delete(schema.steering_events)
+      .where(or(eq(schema.steering_events.observed_run_id, runId), eq(schema.steering_events.observer_run_id, runId)))
+      .run();
     tx.delete(schema.spans).where(eq(schema.spans.run_id, runId)).run();
     tx.delete(schema.live_events).where(eq(schema.live_events.trace_id, runId)).run();
     tx.delete(schema.runs).where(eq(schema.runs.id, runId)).run();
@@ -409,9 +413,32 @@ export function getRuns(limit = 200) {
   return getDrizzleDb()
     .select()
     .from(schema.runs_with_hints)
+    .where(drizzleSql`
+      COALESCE(${schema.runs_with_hints.event_name}, '') != 'observer_agent_session'
+      AND COALESCE(${schema.runs_with_hints.user_id}, '') != 'opencode-observer'
+      AND COALESCE(${schema.runs_with_hints.metadata}, '') NOT LIKE '%"observedRunId"%'
+    `)
     .orderBy(desc(schema.runs_with_hints.last_updated_at))
     .limit(limit)
     .all();
+}
+
+export function getObserverRunsForObservedRun(observedRunId: string) {
+  return getDrizzleDb()
+    .select()
+    .from(schema.runs_with_hints)
+    .where(drizzleSql`
+      COALESCE(${schema.runs_with_hints.metadata}, '') LIKE ${`%"observedRunId":"${observedRunId}"%`}
+      OR COALESCE(${schema.runs_with_hints.metadata}, '') LIKE ${`%"observedRunId": "${observedRunId}"%`}
+    `)
+    .orderBy(desc(schema.runs_with_hints.last_updated_at))
+    .all();
+}
+
+export function isObserverRun(row: { event_name?: string | null; user_id?: string | null; metadata?: string | null }): boolean {
+  return row.event_name === "observer_agent_session" ||
+    row.user_id === "opencode-observer" ||
+    Boolean(row.metadata && OBSERVER_RUN_METADATA_RE.test(row.metadata));
 }
 
 export function hasAnyRuns(): boolean {
@@ -620,6 +647,7 @@ export function getRunsByConvoId(convoId: string) {
 
 export function clearAll() {
   getDrizzleDb().transaction((tx) => {
+    tx.delete(schema.steering_events).run();
     tx.delete(schema.live_events).run();
     tx.delete(schema.spans).run();
     tx.delete(schema.runs).run();

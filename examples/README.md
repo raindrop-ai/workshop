@@ -53,6 +53,7 @@ ends with an `Open in Workshop` deep link to the run.
 | [`go-chat`](./go-chat) | `net/http` + `raindrop-ai/go` | go | 3019 |
 | [`pi-agent-chat`](./pi-agent-chat) | `@raindrop-ai/pi-agent` instrumenting `@mariozechner/pi-agent-core` | bun | 3020 |
 | [`opencode-plugin-chat`](./opencode-plugin-chat) | The real OpenCode CLI loading `@raindrop-ai/opencode-plugin` | bun | 3021 |
+| [`opencode-observer-agent`](./opencode-observer-agent) | A second OpenCode process acting as an LLM-as-judge observer that reads Workshop SQLite traces and posts steering nudges | bun | 3031 |
 
 Each row links to a per-example README with provider keys, what the demo
 exercises, and what to look for in the Workshop UI.

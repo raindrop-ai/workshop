@@ -140,6 +140,32 @@ export const annotations = sqliteTable(
   ],
 );
 
+export const steering_events = sqliteTable(
+  "steering_events",
+  {
+    id: text("id").primaryKey(),
+    observed_run_id: text("observed_run_id").notNull(),
+    observer_run_id: text("observer_run_id"),
+    target_span_id: text("target_span_id"),
+    target_subagent_span_id: text("target_subagent_span_id"),
+    action: text("action").notNull(),
+    status: text("status").notNull(),
+    message: text("message"),
+    before_prompt: text("before_prompt"),
+    after_prompt: text("after_prompt"),
+    reason: text("reason"),
+    source: text("source").notNull(),
+    confidence: real("confidence"),
+    created_at: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_steering_observed").on(table.observed_run_id, desc(table.created_at)),
+    index("idx_steering_observer").on(table.observer_run_id).where(sql`${table.observer_run_id} IS NOT NULL`),
+    index("idx_steering_target_span").on(table.target_span_id).where(sql`${table.target_span_id} IS NOT NULL`),
+    index("idx_steering_target_subagent").on(table.target_subagent_span_id).where(sql`${table.target_subagent_span_id} IS NOT NULL`),
+  ],
+);
+
 export const runs_with_hints = sqliteView("runs_with_hints", {
   id: text("id"),
   event_id: text("event_id"),
