@@ -18,9 +18,16 @@ export interface ClaudeChatMessage {
 
 export interface ClaudeSessionSummary {
   id: string;
+  title?: string | null;
+  is_fork?: boolean;
+  forked_from_id?: string | null;
+  fork_depth?: number;
+  needs_compact?: boolean;
   created_at: string | null;
   updated_at: string | null;
   message_count: number;
+  loaded_message_count?: number;
+  messages_truncated?: boolean;
   last_prompt: string | null;
   preview: string | null;
   cwd?: string;
@@ -58,6 +65,7 @@ export type AgentStreamEvent =
   | { type: "text"; content: string }
   | ({ type: "loadout" } & AgentLoadout)
   | { type: "error"; content: string }
+  | { type: "status"; content: string }
   | { type: "tool_start"; id: string; name: string; input_preview?: string }
   | { type: "tool_finish"; id: string; ok: boolean; output_preview?: string }
   | { type: "thinking_delta"; content: string }

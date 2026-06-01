@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Folder as FolderIcon, KeyRound, Plus, Send, Terminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Folder as FolderIcon, GitFork, KeyRound, Plus, Send, Terminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import claudeCodeLogo from "../assets/claude-code-logo.png";
 import codexLogo from "../assets/codex-logo.svg";
@@ -6,87 +6,26 @@ import { useWorkshopEvent } from "../hooks/use-workshop-ws";
 import { router } from "../router";
 import { runPath } from "../utils/navigation";
 import { isAgentProvider, providerLabel, type AgentProviderId } from "../utils/agent-provider";
+import type {
+  AgentLoadout,
+  AgentStreamEvent,
+  ClaudeAskUserQuestion,
+  ClaudeChatMessage,
+  ClaudeChatMessageBlock,
+  ClaudeMessageStream,
+  ClaudeSessionDetail,
+  ClaudeSessionSummary,
+} from "../api/chat";
 import { ConnectionIndicator } from "./ConnectionIndicator";
 import { Markdown } from "./Markdown";
 import { RaindropLogo } from "./RaindropLogo";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-
-type Role = "user" | "assistant";
-
-interface ClaudeChatMessage {
-  id: string;
-  role: Role;
-  content: string;
-  blocks?: ClaudeChatMessageBlock[];
-  timestamp: string | null;
-  error?: string;
-}
-
-type ClaudeChatMessageBlock =
-  | { type: "text"; text: string }
-  | { type: "tool"; id: string; name: string; input_preview?: string; output_preview?: string; ok?: boolean }
-  | { type: "thinking"; text: string };
-
-interface ClaudeSessionSummary {
-  id: string;
-  created_at: string | null;
-  updated_at: string | null;
-  message_count: number;
-  last_prompt: string | null;
-  preview: string | null;
-  cwd?: string;
-}
-
-interface ClaudeSessionDetail extends ClaudeSessionSummary {
-  messages: ClaudeChatMessage[];
-}
 
 type AssistantMessageBlock =
   | { type: "text"; text: string }
   | { type: "tool"; id: string; name: string; input_preview?: string; output_preview?: string; ok?: boolean; state: "running" | "done" }
   | { type: "thinking"; text: string }
   | { type: "error"; text: string };
-
-interface ClaudeAskUserQuestion {
-  id: string;
-  session_id: string;
-  tool_use_id: string;
-  questions: ClaudeAskQuestion[];
-  created_at: string;
-}
-
-interface ClaudeAskQuestion {
-  question: string;
-  header?: string;
-  multiSelect: boolean;
-  options: Array<{ label: string; description?: string }>;
-}
-
-interface ClaudeMessageStream {
-  client_message_id?: string;
-  session_id?: string | null;
-  event?: AgentStreamEvent;
-}
-
-type AgentStreamEvent =
-  | { type: "text"; content: string }
-  | ({ type: "loadout" } & AgentLoadout)
-  | { type: "error"; content: string }
-  | { type: "tool_start"; id: string; name: string; input_preview?: string }
-  | { type: "tool_finish"; id: string; ok: boolean; output_preview?: string }
-  | { type: "thinking_delta"; content: string }
-  | { type: "subagent_start"; parent_id: string; subagent: string }
-  | { type: "provider_session"; sessionId: string }
-  | { type: "done" };
-
-interface AgentLoadout {
-  tools?: string[];
-  mcps?: string[];
-  skills?: string[];
-  plugins?: string[];
-  slash_commands?: string[];
-  model?: string;
-}
 
 interface SlashItem {
   label: string;
@@ -100,6 +39,7 @@ const PROVIDER_INTRO_SEEN_KEY = "workshop:messagePane:providerIntroSeen";
 const MIN_WIDTH = 360;
 const MAX_WIDTH = 760;
 const DEFAULT_WIDTH = 460;
+const CHAT_DETAIL_MESSAGE_LIMIT = 120;
 const COLLAPSE_PREVIEW_WIDTH = MIN_WIDTH - 24;
 const COLLAPSE_COMMIT_WIDTH = MIN_WIDTH - 78;
 const COLLAPSE_HOLD_MS = 220;
@@ -155,6 +95,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const [sending, setSending] = useState(false);
   const [showList, setShowList] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [forkingSessionId, setForkingSessionId] = useState<string | null>(null);
   const [pendingQuestions, setPendingQuestions] = useState<ClaudeAskUserQuestion[]>([]);
   const [liveBlocks, setLiveBlocks] = useState<AssistantMessageBlock[]>([]);
   const [loadout, setLoadout] = useState<AgentLoadout | null>(null);
@@ -180,7 +121,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const hiddenPendingSessionIdsRef = useRef<Set<string>>(new Set());
   const suppressPendingUntilNextSendRef = useRef(false);
 
-  function setCollapsed(v: boolean) {
+  const setCollapsed = useCallback((v: boolean) => {
     setCollapsePreview(false);
     setSpringClosing(false);
     if (collapseHoldTimerRef.current) {
@@ -193,9 +134,9 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     }
     setCollapsedState(v);
     saveCollapsed(v);
-  }
+  }, []);
 
-  function springCloseFromResize() {
+  const springCloseFromResize = useCallback(() => {
     if (springClosing || springCloseTimerRef.current) return;
     resizeRef.current = null;
     if (collapseHoldTimerRef.current) {
@@ -209,7 +150,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       springCloseTimerRef.current = null;
       setCollapsed(true);
     }, COLLAPSE_SPRING_MS);
-  }
+  }, [setCollapsed, springClosing]);
 
   function dismissProviderIntro() {
     setShowProviderIntro(false);
@@ -276,7 +217,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("resize", onResize);
     };
-  }, []);
+  }, [springCloseFromResize]);
 
   const refreshSessions = useCallback(async () => {
     const res = await fetch("/api/agent/sessions");
@@ -285,7 +226,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   const loadSession = useCallback(async (id: string) => {
     setError(null);
-    const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`);
+    const url = provider === "codex"
+      ? `/api/agent/sessions/${encodeURIComponent(id)}?message_limit=${CHAT_DETAIL_MESSAGE_LIMIT}`
+      : `/api/agent/sessions/${encodeURIComponent(id)}`;
+    const res = await fetch(url);
     if (!res.ok) {
       setError(`Could not load ${providerLabel(provider)} session.`);
       return;
@@ -296,9 +240,39 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     hiddenPendingSessionIdsRef.current.delete(id);
     suppressPendingUntilNextSendRef.current = false;
     setSelectedId(id);
-    setDetail(await res.json());
+    const loaded = await res.json();
+    setDetail(loaded);
     setShowList(false);
   }, [pendingQuestions, provider]);
+
+  const forkSession = useCallback(async (id: string) => {
+    if (provider !== "codex" || forkingSessionId) return;
+    setError(null);
+    setForkingSessionId(id);
+    try {
+      const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}/fork`, { method: "POST" });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.session) {
+        throw new Error(body?.error ?? "Could not fork Codex chat.");
+      }
+      const session = body.session as ClaudeSessionSummary;
+      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setSelectedId(session.id);
+      setDetail({
+        ...session,
+        loaded_message_count: 0,
+        messages_truncated: false,
+        messages: [],
+      });
+      setLiveBlocks([]);
+      setShowList(false);
+      void refreshSessions();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setForkingSessionId(null);
+    }
+  }, [forkingSessionId, provider, refreshSessions]);
 
   useEffect(() => {
     void refreshSessions();
@@ -319,7 +293,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       window.removeEventListener("workshop:open-message-pane", openPane);
       window.removeEventListener("workshop:messagePane:resetOnboarding", resetOnboarding);
     };
-  }, []);
+  }, [setCollapsed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -358,6 +332,21 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   }, [draft]);
 
   useEffect(() => {
+    if (provider !== "codex") return;
+    setDetail((current) => {
+      if (!current || current.messages.length <= CHAT_DETAIL_MESSAGE_LIMIT) return current;
+      const total = Math.max(current.message_count, current.messages.length);
+      return {
+        ...current,
+        message_count: total,
+        loaded_message_count: CHAT_DETAIL_MESSAGE_LIMIT,
+        messages_truncated: total > CHAT_DETAIL_MESSAGE_LIMIT,
+        messages: current.messages.slice(-CHAT_DETAIL_MESSAGE_LIMIT),
+      };
+    });
+  }, [detail?.id, detail?.messages.length, provider]);
+
+  useEffect(() => {
     setActiveSlashIndex(0);
   }, [draft]);
 
@@ -367,10 +356,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const res = await fetch("/api/agent/provider");
       if (!res.ok) return;
       const body = await res.json().catch(() => null);
-      if (!cancelled && isAgentProvider(body?.provider)) setProvider(body.provider);
+      if (!cancelled && isAgentProvider(body?.provider)) {
+        setProvider(body.provider);
+        void refreshSessions();
+      }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshSessions]);
 
   useWorkshopEvent("agent_provider", (data: { provider?: string }) => {
     if (isAgentProvider(data.provider)) {
@@ -416,7 +408,9 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
   useWorkshopEvent("agent_message_stream", (data: ClaudeMessageStream) => {
     if (!data?.client_message_id || data.client_message_id !== activeClientMessageIdRef.current) return;
-    if (data.session_id) setSelectedId(data.session_id);
+    if (data.session_id) {
+      setSelectedId(data.session_id);
+    }
     const event = data.event;
     if (!event) return;
     if (event.type === "loadout") setLoadout(event);
@@ -454,12 +448,16 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         timestamp: new Date().toISOString(),
       };
       setDetail((current) => current
-        ? { ...current, messages: [...current.messages, optimistic] }
+        ? {
+          ...current,
+          messages: [...current.messages, optimistic],
+        }
         : {
           id: "new",
           created_at: optimistic.timestamp,
           updated_at: optimistic.timestamp,
           message_count: 1,
+          title: null,
           last_prompt: content,
           preview: content,
           messages: [optimistic],
@@ -480,9 +478,16 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       const body = await res.json().catch(() => null);
       if (activeClientMessageIdRef.current !== clientMessageId) return;
       if (!res.ok) throw new Error(body?.error ?? `${providerLabel(provider)} request failed (${res.status})`);
-      if (body?.session_id) setSelectedId(body.session_id);
+      if (body?.session_id) {
+        setSelectedId(body.session_id);
+      }
       if (body?.session) {
-        setDetail(appendLiveCompletionIfMissing(body.session, liveBlocksRef.current));
+        const capturedBlocks = liveBlocksRef.current.length
+          ? liveBlocksRef.current
+          : typeof body.text === "string"
+            ? [{ type: "text" as const, text: body.text }]
+            : [];
+        setDetail(appendLiveCompletionIfMissing(body.session, capturedBlocks));
       } else if (typeof body?.text === "string") {
         const capturedBlocks = liveBlocksRef.current.length
           ? liveBlocksRef.current
@@ -523,7 +528,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   }
 
   async function switchProvider(next: AgentProviderId) {
-    if (next === provider || switchingProvider) return;
+    if (switchingProvider) return;
+    if (next === provider) {
+      startNewChat();
+      setShowList(true);
+      void refreshSessions();
+      return;
+    }
     const previous = provider;
     setProvider(next);
     setError(null);
@@ -610,10 +621,12 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const visiblePendingQuestions = pendingQuestions.filter((question) => question.session_id === selectedId);
   const visibleLiveBlocks = visibleAssistantBlocks(liveBlocks);
   const showTraceDebugPrompt = !!activeRunId && messages.length === 0 && !sending && visibleLiveBlocks.length === 0;
+  const codexTraceForkMode = provider === "codex" && !!activeRunId;
   const slashItems = useMemo(() => buildSlashItems(loadout, draft, provider), [loadout, draft, provider]);
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
   const currentCwd = detail?.cwd ?? workspaceCwd;
   const currentCwdDisplay = formatCwdDisplay(currentCwd);
+  const currentSessionTitle = detail ? displaySessionTitle(detail, provider) : "New chat";
 
   useEffect(() => {
     setActiveSlashIndex((index) => Math.min(index, Math.max(0, slashItems.length - 1)));
@@ -718,8 +731,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
             </button>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-white/85" title={detail?.preview ?? detail?.last_prompt ?? "New chat"}>
-                  {detail?.preview ?? detail?.last_prompt ?? "New chat"}
+                <div className="truncate text-sm font-medium text-white/85" title={currentSessionTitle}>
+                  {currentSessionTitle}
                 </div>
                 <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/35">
                   <FolderIcon className="h-3 w-3 shrink-0" />
@@ -781,13 +794,22 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           providerError={error}
           providerBusy={switchingProvider}
           showProviderIntro={showProviderIntro}
+          traceForkMode={codexTraceForkMode}
+          forkingSessionId={forkingSessionId}
           onProviderIntroChoice={chooseIntroProvider}
           onSelect={(id) => void loadSession(id)}
+          onFork={(id) => void forkSession(id)}
           onNew={startNewChat}
         />
       ) : (
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div ref={scrollRef} className={`flex-1 overflow-y-auto px-3 pt-3 ${showTraceDebugPrompt ? "pb-44" : "pb-36"} space-y-3 text-sm`}>
+            {detail?.messages_truncated && (
+              <ChatTruncationNotice
+                loaded={detail.loaded_message_count ?? messages.length}
+                total={detail.message_count}
+              />
+            )}
             {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
             {visibleLiveBlocks.length > 0 && (
               <div className="message-arrive flex flex-col items-start gap-2">
@@ -1121,14 +1143,13 @@ function appendLiveCompletionIfMissing(
   const blocks = visibleAssistantBlocks(liveBlocks);
   if (!blocks.length) return session;
 
-  const lastUserIndex = findLastMessageIndex(session.messages, "user");
-  const hasAssistantAfterUser = session.messages
-    .slice(Math.max(0, lastUserIndex + 1))
-    .some((message) => message.role === "assistant" && parseAssistantBlocks(message).length > 0);
-  if (hasAssistantAfterUser) return session;
-
   const content = assistantBlocksText(blocks);
   if (!content.trim()) return session;
+  const alreadyPresent = session.messages.some((message) => (
+    message.role === "assistant" &&
+    assistantBlocksText(parseAssistantBlocks(message)).trim() === content.trim()
+  ));
+  if (alreadyPresent) return session;
 
   return {
     ...session,
@@ -1143,13 +1164,6 @@ function appendLiveCompletionIfMissing(
       },
     ],
   };
-}
-
-function findLastMessageIndex(messages: ClaudeChatMessage[], role: Role): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === role) return i;
-  }
-  return -1;
 }
 
 function assistantBlocksText(blocks: AssistantMessageBlock[]): string {
@@ -1264,8 +1278,11 @@ function ChatList({
   providerError,
   providerBusy,
   showProviderIntro,
+  traceForkMode,
+  forkingSessionId,
   onProviderIntroChoice,
   onSelect,
+  onFork,
   onNew,
 }: {
   sessions: ClaudeSessionSummary[];
@@ -1275,13 +1292,21 @@ function ChatList({
   providerError: string | null;
   providerBusy: boolean;
   showProviderIntro: boolean;
+  traceForkMode: boolean;
+  forkingSessionId: string | null;
   onProviderIntroChoice: (provider: AgentProviderId) => void;
   onSelect: (id: string) => void;
+  onFork: (id: string) => void;
   onNew: () => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [introProvider, setIntroProvider] = useState<AgentProviderId>(provider);
   const [introSessions, setIntroSessions] = useState<ClaudeSessionSummary[]>(sessions);
+  const visibleSessions = useMemo(() => raindropVisibleSessions(sessions, provider), [sessions, provider]);
+  const visibleIntroSessions = useMemo(
+    () => raindropVisibleSessions(introSessions, introProvider),
+    [introProvider, introSessions],
+  );
 
   useEffect(() => {
     if (showProviderIntro) setIntroProvider(provider);
@@ -1337,13 +1362,14 @@ function ChatList({
               Your Recent {providerLabel(introProvider)} Chats
             </div>
             <div className="space-y-1.5 opacity-60">
-              {introSessions.length === 0 ? (
+              {visibleIntroSessions.length === 0 ? (
                 <div className="flex h-[150px] items-center justify-center text-xs text-white/35">No chats yet.</div>
-              ) : introSessions.slice(0, 4).map((session) => (
+              ) : visibleIntroSessions.slice(0, 4).map((session) => (
                 <ChatPreviewItem
                   key={session.id}
                   session={session}
                   workspaceCwd={workspaceCwd}
+                  provider={introProvider}
                 />
               ))}
             </div>
@@ -1361,10 +1387,15 @@ function ChatList({
             <Plus className="h-4 w-4" />
             New chat
           </button>
+          {traceForkMode && (
+            <div className="mb-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs leading-relaxed text-cyan-50/65">
+              Open a Codex chat to resume it, or fork it for this trace with the fork button.
+            </div>
+          )}
           <div className="space-y-1">
-            {sessions.length === 0 ? (
+            {visibleSessions.length === 0 ? (
               <div className="px-3 py-8 text-center text-xs text-white/40">No {providerLabel(provider)} chats yet.</div>
-            ) : sessions.map((session) => (
+            ) : visibleSessions.map((session) => (
               <ChatListItem
                 key={session.id}
                 session={session}
@@ -1372,7 +1403,10 @@ function ChatList({
                 workspaceCwd={workspaceCwd}
                 provider={provider}
                 copied={copiedId === session.id}
+                forkMode={traceForkMode}
+                forking={forkingSessionId === session.id}
                 onSelect={onSelect}
+                onFork={onFork}
                 onCopy={copyResumeCommand}
               />
             ))}
@@ -1445,7 +1479,10 @@ function ChatListItem({
   workspaceCwd,
   provider,
   copied,
+  forkMode,
+  forking,
   onSelect,
+  onFork,
   onCopy,
 }: {
   session: ClaudeSessionSummary;
@@ -1453,11 +1490,16 @@ function ChatListItem({
   workspaceCwd: string | null;
   provider: AgentProviderId;
   copied: boolean;
+  forkMode: boolean;
+  forking: boolean;
   onSelect: (id: string) => void;
+  onFork: (id: string) => void;
   onCopy: (event: SyntheticEvent, session: ClaudeSessionSummary) => Promise<void>;
 }) {
   const cwd = session.cwd ?? workspaceCwd;
   const cwdDisplay = formatCwdDisplay(cwd);
+  const title = displaySessionTitle(session, provider);
+  const preview = provider === "codex" ? displayCodexPreview(session, title) : null;
   return (
     <div
       role="button"
@@ -1475,9 +1517,14 @@ function ChatListItem({
       }`}
     >
       <div className="flex items-center justify-between gap-3">
-        <div className="truncate text-xs font-medium">{session.preview || "Untitled chat"}</div>
+        <div className="truncate text-xs font-medium" title={title}>{title}</div>
         <div className="shrink-0 text-[10px] text-white/35">{formatSessionTime(session.updated_at)}</div>
       </div>
+      {preview && (
+        <div className="mt-1 truncate text-[11px] text-white/55" title={preview}>
+          {preview}
+        </div>
+      )}
       <div className="mt-1.5 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/35">
         <Terminal className="h-3 w-3 shrink-0" />
         <span className="truncate" title={cwd ?? "Working directory unavailable"}>
@@ -1487,6 +1534,25 @@ function ChatListItem({
       <div className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-white/30">
         <span>{session.id.slice(0, 8)} · {session.message_count} messages</span>
         <span className="h-3 w-px bg-white/10" />
+        {forkMode && provider === "codex" && (
+          <button
+            type="button"
+            title="Fork chat for this trace"
+            aria-label="Fork chat for this trace"
+            disabled={forking}
+            onClick={(event) => {
+              event.stopPropagation();
+              onFork(session.id);
+            }}
+            className={`grid h-5 w-5 place-items-center rounded transition-colors focus:outline-none focus-visible:outline-none ${
+              forking
+                ? "cursor-wait text-cyan-200"
+                : "text-white/35 hover:text-white"
+            }`}
+          >
+            <GitFork className="h-3 w-3" />
+          </button>
+        )}
         <button
           type="button"
           title={`Copy ${resumeCommandForSession(session, workspaceCwd, provider)}`}
@@ -1505,18 +1571,89 @@ function ChatListItem({
   );
 }
 
+function sessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
+  if (provider === "codex") return session.title || session.preview || `Codex chat ${session.id.slice(0, 8)}`;
+  return session.title || session.preview || "Untitled chat";
+}
+
+function displaySessionTitle(session: ClaudeSessionSummary, provider: AgentProviderId): string {
+  const title = sessionTitle(session, provider);
+  return provider === "codex" ? raindropCodexTitle(title) : title;
+}
+
+function displayCodexPreview(session: ClaudeSessionSummary, title: string): string | null {
+  if (!session.preview) return null;
+  const preview = raindropCodexTitle(session.preview);
+  return preview && preview !== title ? preview : null;
+}
+
+function raindropCodexTitle(value: string): string {
+  const parsed = parseCodexForkTitle(value);
+  return formatRaindropForkTitle(Math.max(0, parsed.depth - 1), parsed.base);
+}
+
+function parseCodexForkTitle(value: string): { depth: number; base: string } {
+  const cleaned = value.replace(/\s+/g, " ").trim() || "Untitled chat";
+  const match = cleaned.match(/^\[forked(?:\^(\d+))?\]\s*(.*)$/i);
+  if (!match) return { depth: 0, base: cleaned };
+  const depth = match[1] ? Number.parseInt(match[1], 10) : 1;
+  return {
+    depth: Number.isFinite(depth) && depth > 0 ? depth : 1,
+    base: match[2]?.trim() || "Untitled chat",
+  };
+}
+
+function formatRaindropForkTitle(depth: number, base: string): string {
+  const cleanBase = base.replace(/\s+/g, " ").trim() || "Untitled chat";
+  if (depth <= 0) return cleanBase;
+  return depth === 1 ? `[forked] ${cleanBase}` : `[forked^${depth}] ${cleanBase}`;
+}
+
+function isCodexForkSession(session: ClaudeSessionSummary | null | undefined): boolean {
+  if (!session) return false;
+  return Boolean(
+    session.is_fork ||
+    session.forked_from_id ||
+    (session.fork_depth ?? 0) > 0 ||
+    /^\[forked(?:\^\d+)?\]\s*/i.test(session.title ?? ""),
+  );
+}
+
+function raindropVisibleSessions(sessions: ClaudeSessionSummary[], provider: AgentProviderId): ClaudeSessionSummary[] {
+  if (provider !== "codex") return sessions;
+
+  const forkParentIds = new Set(
+    sessions
+      .map((session) => isCodexForkSession(session) ? session.forked_from_id : null)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  return sessions
+    .filter((session) => isCodexForkSession(session) || !forkParentIds.has(session.id))
+    .slice()
+    .sort((a, b) => {
+      const aFork = isCodexForkSession(a);
+      const bFork = isCodexForkSession(b);
+      if (aFork !== bFork) return aFork ? -1 : 1;
+      return (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0);
+    });
+}
+
 function ChatPreviewItem({
   session,
   workspaceCwd,
+  provider,
 }: {
   session: ClaudeSessionSummary;
   workspaceCwd: string | null;
+  provider: AgentProviderId;
 }) {
   const cwd = formatCwdDisplay(session.cwd ?? workspaceCwd);
+  const title = displaySessionTitle(session, provider);
   return (
     <div className="px-1 py-1">
       <div className="flex items-center gap-3">
-        <div className="min-w-0 flex-1 truncate text-xs text-white/70">{session.preview || "Untitled chat"}</div>
+        <div className="min-w-0 flex-1 truncate text-xs text-white/70">{title}</div>
         <div className="shrink-0 text-[10px] text-white/35">{formatSessionTime(session.updated_at)}</div>
       </div>
       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/30">
@@ -1571,6 +1708,15 @@ function TraceDebugPrompt({ onPrompt }: { onPrompt: (prompt: string) => void }) 
           {prompt}
         </button>
       ))}
+    </div>
+  );
+}
+
+function ChatTruncationNotice({ loaded, total }: { loaded: number; total: number }) {
+  const hidden = Math.max(0, total - loaded);
+  return (
+    <div className="rounded-md border border-white/10 bg-white/[0.045] px-3 py-2 text-xs leading-relaxed text-white/55">
+      Showing the latest {loaded.toLocaleString()} of {total.toLocaleString()} messages. {hidden.toLocaleString()} older messages are not loaded to keep Workshop light.
     </div>
   );
 }

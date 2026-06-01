@@ -17,7 +17,13 @@ import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContex
 import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
-import { getCodexSession, listCodexSessions } from "./codex-sessions";
+import {
+  ensureForkedCodexSessionTitle,
+  forkCodexSession,
+  getCodexSession,
+  listCodexSessions,
+  markForkedCodexSessionCompacted,
+} from "./codex-sessions";
 import { runClaudeCliChat } from "./claude-cli-chat";
 import { runCodexCliChat } from "./codex-cli-chat";
 import {
@@ -55,6 +61,20 @@ import {
   type AnnotationSource,
 } from "./annotations";
 import { replayDefaultDemoTraces } from "./demo-traces";
+
+const CODEX_FORK_COMPACT_PROMPT = [
+  "<workshop_internal_compact_fork>",
+  "Workshop maintenance turn: compact this newly forked Codex conversation before the user's trace-debugging message is sent.",
+  "Do not inspect files or call tools. Reply exactly: Compacted.",
+].join("\n");
+const DEFAULT_CODEX_FORK_COMPACT_TIMEOUT_MS = 25_000;
+
+function codexForkCompactTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.RAINDROP_WORKSHOP_CODEX_FORK_COMPACT_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_CODEX_FORK_COMPACT_TIMEOUT_MS;
+}
 
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
   return value === "user" || value === "claude-code" || value === "codex" ? value : null;
@@ -1170,7 +1190,7 @@ export async function createServer(port: number) {
     }
     const targetProvider = requestedProvider ?? agentProvider;
     if (targetProvider === "codex") {
-      res.json(listCodexSessions(workspace.cwd));
+      res.json(listCodexSessions());
       return;
     }
     res.json(listClaudeSessions(workspace.cwd));
@@ -1186,7 +1206,7 @@ export async function createServer(port: number) {
     const workspace = activeWorkspaceOrError(res);
     if (!workspace) return;
     if (agentProvider === "codex") {
-      const session = getCodexSession(workspace.cwd, req.params.id);
+      const session = getCodexSession(req.params.id, null, { messageLimit: parseMessageLimit(req.query.message_limit) });
       if (!session) {
         res.status(404).json({ error: "Codex session not found" });
         return;
@@ -1200,6 +1220,21 @@ export async function createServer(port: number) {
       return;
     }
     res.json(session);
+  });
+
+  app.post("/api/agent/sessions/:id/fork", (req, res) => {
+    const workspace = activeWorkspaceOrError(res);
+    if (!workspace) return;
+    if (agentProvider !== "codex") {
+      res.status(400).json({ error: "Forking existing chats is only supported for Codex." });
+      return;
+    }
+    const fork = forkCodexSession(req.params.id);
+    if (!fork) {
+      res.status(404).json({ error: "Codex session to fork was not found." });
+      return;
+    }
+    res.json({ session: fork });
   });
 
   app.post("/api/agent/messages", async (req, res) => {
@@ -1221,6 +1256,17 @@ export async function createServer(port: number) {
     if (!workspace) return;
 
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
+    let chatCwd = workspace.cwd;
+    let shouldCompactForkBeforeMessage = false;
+    let forkedCodexTitle: string | null = null;
+    if (requestProvider === "codex" && providerSessionId) {
+      const existing = getCodexSession(providerSessionId, null, { messageLimit: 1 });
+      if (existing?.cwd) chatCwd = existing.cwd;
+      if (existing?.needs_compact) {
+        forkedCodexTitle = existing.title ?? null;
+        shouldCompactForkBeforeMessage = true;
+      }
+    }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
       : randomUUID();
@@ -1237,11 +1283,64 @@ export async function createServer(port: number) {
       broadcast("agent_message_stream", data);
       if (requestProvider === "claude") broadcast("claude_message_stream", data);
     };
+    const preserveForkTitle = () => {
+      if (requestProvider !== "codex" || !providerSessionId) return;
+      const session = ensureForkedCodexSessionTitle(providerSessionId, forkedCodexTitle);
+      forkedCodexTitle = session?.title ?? forkedCodexTitle;
+    };
     try {
+      if (requestProvider === "codex" && shouldCompactForkBeforeMessage && providerSessionId) {
+        broadcastStreamEvent({ type: "status", content: "Compacting forked Codex chat..." });
+        broadcastStreamEvent({ type: "provider_session", sessionId: providerSessionId });
+        const compactAbort = new AbortController();
+        const compactTimeoutMs = codexForkCompactTimeoutMs();
+        let compactTimedOut = false;
+        const compactTimer = setTimeout(() => {
+          compactTimedOut = true;
+          compactAbort.abort();
+        }, compactTimeoutMs);
+        const compactResult = await runCodexCliChat({
+          backendUrl: backendUrl(),
+          content: CODEX_FORK_COMPACT_PROMPT,
+          cwd: chatCwd,
+          runId: null,
+          resumeSessionId: providerSessionId,
+          forceAutoCompact: true,
+          abortSignal: compactAbort.signal,
+        }, {
+          onEvent() {},
+          onProviderSession(sessionId) {
+            providerSessionId = sessionId;
+          },
+          onText() {},
+          onStatus() {},
+          onError(nextContent) {
+            errorText = nextContent;
+          },
+        }).finally(() => {
+          clearTimeout(compactTimer);
+          preserveForkTitle();
+          if (providerSessionId) markForkedCodexSessionCompacted(providerSessionId);
+        });
+        if (compactTimedOut) {
+          broadcastStreamEvent({
+            type: "status",
+            content: `Codex compact did not finish within ${Math.round(compactTimeoutMs / 1000)}s; sending without waiting for it.`,
+          });
+        } else if (compactResult.code !== 0 || errorText) {
+          broadcastStreamEvent({
+            type: "status",
+            content: errorText || compactResult.stderr || "Codex compact failed; sending without compacting.",
+          });
+        }
+        errorText = "";
+      }
+
+      preserveForkTitle();
       const chatInput = {
         backendUrl: backendUrl(),
         content,
-        cwd: workspace.cwd,
+        cwd: chatCwd,
         runId: typeof run_id === "string" ? run_id : null,
         resumeSessionId: providerSessionId,
       };
@@ -1253,6 +1352,7 @@ export async function createServer(port: number) {
           },
           onProviderSession(sessionId) {
             providerSessionId = sessionId;
+            preserveForkTitle();
             broadcastStreamEvent({ type: "provider_session", sessionId });
           },
           onText(nextContent) {
@@ -1286,6 +1386,7 @@ export async function createServer(port: number) {
           },
         });
       if (result.code !== 0 || errorText) {
+        preserveForkTitle();
         res.status(502).json({
           error: errorText || result.stderr || `${agentProviderLabel(requestProvider)} exited with code ${result.code ?? "unknown"}`,
           client_message_id: clientMessageId,
@@ -1294,6 +1395,7 @@ export async function createServer(port: number) {
         });
         return;
       }
+      preserveForkTitle();
       res.json({
         client_message_id: clientMessageId,
         session_id: providerSessionId,
@@ -1302,7 +1404,7 @@ export async function createServer(port: number) {
         session: providerSessionId
           ? requestProvider === "claude"
             ? getClaudeSession(workspace.cwd, providerSessionId)
-            : getCodexSession(workspace.cwd, providerSessionId)
+            : getCodexSession(providerSessionId)
           : null,
       });
     } catch (err) {
@@ -1314,6 +1416,13 @@ export async function createServer(port: number) {
       });
     }
   });
+
+  function parseMessageLimit(value: unknown): number {
+    const raw = Array.isArray(value) ? value[0] : value;
+    const parsed = typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
+    if (!Number.isFinite(parsed)) return 120;
+    return Math.max(20, Math.min(500, parsed));
+  }
 
   app.get("/api/claude/sessions", (_req, res) => {
     const workspace = activeWorkspaceOrError(res);

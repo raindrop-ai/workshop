@@ -26,10 +26,22 @@ export function runCodexCliChat(
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  let closed = false;
   if (input.abortSignal) {
-    if (input.abortSignal.aborted) child.kill("SIGINT");
-    input.abortSignal.addEventListener("abort", () => child.kill("SIGINT"), { once: true });
+    const abortChild = () => {
+      if (closed) return;
+      child.kill("SIGINT");
+      const timer = setTimeout(() => {
+        if (!closed) child.kill("SIGKILL");
+      }, 3_000);
+      timer.unref?.();
+    };
+    if (input.abortSignal.aborted) abortChild();
+    input.abortSignal.addEventListener("abort", abortChild, { once: true });
   }
+  child.once("close", () => {
+    closed = true;
+  });
   return consumeCodexStream(child, handlers);
 }
 
@@ -45,6 +57,14 @@ export function buildCodexArgs(input: CodexCliChatInput): string[] {
     "-c",
     `mcp_servers.raindrop.env={RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)},RAINDROP_WORKSHOP_AGENT_PROVIDER="codex",RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}}`,
   ];
+  if (input.forceAutoCompact) {
+    commonArgs.push(
+      "-c",
+      "model_auto_compact_token_limit=0",
+      "-c",
+      'model_auto_compact_token_limit_scope="total"',
+    );
+  }
   if (process.env.RAINDROP_WORKSHOP_CODEX_BYPASS_PERMISSIONS !== "0") {
     commonArgs.unshift("--dangerously-bypass-approvals-and-sandbox");
   } else {
