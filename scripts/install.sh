@@ -276,6 +276,13 @@ run_download_progress() {
 # too so existing scripted installs do not suddenly start touching IDE config.
 RAINDROP_NO_SETUP="${RAINDROP_SKIP_SETUP:-${RAINDROP_SKIP_INIT:-0}}"
 
+# Install "mode" — derives intent from WHERE the user copied the command:
+#   workshop site one-liner  -> default: `raindrop setup` (local debugger + daemon)
+#   onboarding one-liner     -> --cloud: `raindrop cloud setup` (hosted MCP +
+#                               cloud skills, write key in ./.env, NO daemon)
+# Same binary, same installer; only the post-install command differs.
+RAINDROP_CLOUD="${RAINDROP_CLOUD:-0}"
+
 # Track whether the channel was set explicitly (env var or --channel flag).
 # If the user took the default and it turns out the manifest has no entry
 # for that channel (e.g. early-stage repo with only betas published), we
@@ -306,9 +313,10 @@ while [ $# -gt 0 ]; do
     --quiet) RAINDROP_QUIET=1 ;;
     --no-color) RAINDROP_NO_COLOR=1 ;;
     --no-setup|--no-init) RAINDROP_NO_SETUP=1 ;;
+    --cloud) RAINDROP_CLOUD=1 ;;
     -h|--help)
       cat <<'USAGE'
-Usage: install.sh [--channel=stable|beta] [--manifest=URL] [--install-dir=DIR] [--verbose] [--quiet] [--no-color] [--no-setup]
+Usage: install.sh [--channel=stable|beta] [--manifest=URL] [--install-dir=DIR] [--cloud] [--verbose] [--quiet] [--no-color] [--no-setup]
 
 Environment overrides:
   RAINDROP_CHANNEL         stable | beta            (default: stable)
@@ -316,6 +324,7 @@ Environment overrides:
                            (default: https://raw.githubusercontent.com/raindrop-ai/workshop/main/latest.json)
   RAINDROP_INSTALL_DIR     install dir              (default: ~/.raindrop/bin)
   RAINDROP_SKIP_SETUP      1 to skip automatic setup
+  RAINDROP_CLOUD           1 to run `raindrop cloud setup` instead of `setup`
   RAINDROP_VERBOSE         1 to print URLs, hashes, and platform details
   RAINDROP_QUIET           1 to suppress success output
   NO_COLOR                 disable ANSI color
@@ -329,6 +338,11 @@ binary, adds it to PATH for new terminals, then runs `raindrop setup`.
 
   --no-setup / RAINDROP_SKIP_SETUP=1 skip automatic `raindrop setup`.
   --no-init / RAINDROP_SKIP_INIT=1 are accepted as old names for --no-setup.
+
+  --cloud / RAINDROP_CLOUD=1 connect this project to Raindrop cloud instead of
+  the local debugger: runs `raindrop cloud setup` (signs in, writes the write
+  key to ./.env, installs the hosted MCP + cloud skills) and does NOT start a
+  daemon. Use this for the onboarding one-liner.
 USAGE
       exit 0
       ;;
@@ -708,12 +722,21 @@ run_agent_setup() {
   if [ "$RAINDROP_QUIET" != "1" ]; then
     echo ""
   fi
-  if [ -t 0 ]; then
-    "$DEST" setup
-  elif [ -r /dev/tty ] && [ -t 1 ]; then
-    RAINDROP_SETUP_TTY=1 "$DEST" setup
+  # Derive the post-install command from the install mode. Cloud mode connects
+  # to Raindrop cloud (no daemon); default mode is the local debugger setup.
+  local -a setup_cmd
+  if [ "$RAINDROP_CLOUD" = "1" ]; then
+    setup_cmd=(cloud setup)
   else
-    "$DEST" setup
+    setup_cmd=(setup)
+  fi
+
+  if [ -t 0 ]; then
+    "$DEST" "${setup_cmd[@]}"
+  elif [ -r /dev/tty ] && [ -t 1 ]; then
+    RAINDROP_SETUP_TTY=1 "$DEST" "${setup_cmd[@]}"
+  else
+    "$DEST" "${setup_cmd[@]}"
   fi
 }
 

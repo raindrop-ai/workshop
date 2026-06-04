@@ -240,7 +240,7 @@ function assistantBlocksText(blocks: ClaudeChatMessageBlock[]): string {
 function codexToolName(payload: Record<string, unknown>): string {
   const name = stringValue(payload.name) ?? "tool";
   const namespace = stringValue(payload.namespace);
-  if (namespace === "mcp__raindrop__") return `raindrop.${name}`;
+  if (namespace === "mcp__workshop__" || namespace === "mcp__raindrop__") return `workshop.${name}`;
   return namespace ? `${namespace}.${name}` : name;
 }
 

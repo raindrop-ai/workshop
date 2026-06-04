@@ -53,7 +53,7 @@ export function buildClaudeArgs(input: ClaudeCliChatInput): string[] {
   const mcpCommand = resolveWorkshopMcpCommand();
   const mcpConfig = {
     mcpServers: {
-      raindrop: {
+      workshop: {
         command: mcpCommand.command,
         args: mcpCommand.args,
         env: {
@@ -79,7 +79,7 @@ export function buildClaudeArgs(input: ClaudeCliChatInput): string[] {
     "--permission-mode",
     process.env.RAINDROP_WORKSHOP_CLAUDE_PERMISSION_MODE ?? "bypassPermissions",
     "--allowedTools",
-    "mcp__raindrop__*",
+    "mcp__workshop__*,mcp__raindrop__*",
     "--settings",
     JSON.stringify(askUserQuestionHookSettings(input.backendUrl)),
     "--append-system-prompt",

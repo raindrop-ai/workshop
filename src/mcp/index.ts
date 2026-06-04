@@ -6,7 +6,7 @@ import { VERSION } from "../version";
 // MCP server name. We file-drop install (no plugin marketplace), so this
 // identifies the MCP server in the IDE's MCP registry; skills install as
 // flat names (`/instrument-agent`, `/setup-agent-replay`) independent of this.
-const PLUGIN_NAME = "raindrop";
+const PLUGIN_NAME = "workshop";
 const PLUGIN_VERSION = VERSION;
 
 export interface RunMcpOptions {

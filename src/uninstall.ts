@@ -8,11 +8,6 @@ import {
   isSkillAgentType,
   sanitizeName,
 } from "agent-install/skill";
-import {
-  isMcpAgentType,
-  removeMcpServerFromAgent,
-  removeServerFromConfigFile,
-} from "agent-install/mcp";
 import { SKILLS } from "./init-skills";
 import { getSupportedInstallAgents } from "./install/detect";
 import {
@@ -20,6 +15,7 @@ import {
   loadInstallRegistry,
   type InstallRegistryEntry,
 } from "./install/registry";
+import { findOwnedMcpEntries, removeOwnedMcpEntries } from "./install/owned-mcp";
 import { disableWorkshopStartup, type WorkshopStartupDisableOptions } from "./workshop-startup";
 import { VERSION } from "./version";
 
@@ -52,7 +48,6 @@ export interface RunUninstallResult {
 
 class UsageError extends Error {}
 
-const MCP_SERVER_NAME = "raindrop";
 const INSTALLER_BLOCK_START = "# Added by Raindrop installer";
 const INSTALLER_BLOCK_END = "# End Raindrop installer";
 
@@ -318,33 +313,34 @@ function removeMcpForEntry(
   homeDir: string,
   opts: { dryRun: boolean; removed: string[]; failures: string[] },
 ): void {
-  const isGlobal = entry.scope === "global";
   const cwd = entry.cwd ?? process.cwd();
 
   if (opts.dryRun) {
-    opts.removed.push(`would remove ${entry.agent} MCP server ${MCP_SERVER_NAME} (${entry.scope})`);
-    return;
-  }
-
-  if (isMcpAgentType(entry.agent)) {
-    const result = removeMcpServerFromAgent(MCP_SERVER_NAME, entry.agent, { global: isGlobal, cwd });
-    if (result.error) {
-      opts.failures.push(`failed to remove ${entry.agent} MCP from ${result.path}: ${result.error}`);
-    } else if (result.removed) {
-      opts.removed.push(`removed ${entry.agent} MCP from ${result.path}`);
-    }
-    return;
-  }
-
-  if (entry.agent === "windsurf" && isGlobal) {
-    const config = path.join(homeDir, ".codeium", "windsurf", "mcp_config.json");
     try {
-      if (removeServerFromConfigFile(config, "jsonc", "mcpServers", MCP_SERVER_NAME)) {
-        opts.removed.push(`removed windsurf MCP from ${config}`);
+      const owned = findOwnedMcpEntries({ agent: entry.agent, scope: entry.scope, cwd, homeDir });
+      if (owned.length === 0) {
+        opts.removed.push(`no ${entry.agent} MCP entry to remove (${entry.scope})`);
+      }
+      for (const o of owned) {
+        opts.removed.push(`would remove ${entry.agent} MCP server '${o.serverName}' (${entry.scope}, matched by ${o.matchedBy})`);
       }
     } catch (err) {
-      opts.failures.push(`failed to remove windsurf MCP from ${config}: ${(err as Error).message}`);
+      opts.failures.push(`failed to scan ${entry.agent} MCP config: ${(err as Error).message}`);
     }
+    return;
+  }
+
+  try {
+    const results = removeOwnedMcpEntries({ agent: entry.agent, scope: entry.scope, cwd, homeDir });
+    for (const r of results) {
+      if (r.error) {
+        opts.failures.push(`failed to remove ${entry.agent} MCP '${r.entry.serverName}' from ${r.entry.path}: ${r.error}`);
+      } else if (r.removed) {
+        opts.removed.push(`removed ${entry.agent} MCP '${r.entry.serverName}' from ${r.entry.path}`);
+      }
+    }
+  } catch (err) {
+    opts.failures.push(`failed to scan ${entry.agent} MCP config: ${(err as Error).message}`);
   }
 }
 

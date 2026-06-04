@@ -1,4 +1,4 @@
-import { applyInstallPlan } from "./apply";
+import { applyInstallPlan, mcpCleanupWarnings } from "./apply";
 import { loadInstallRegistry } from "./registry";
 import type { InstallPlan } from "./types";
 
@@ -11,6 +11,7 @@ interface SyncResult {
   total: number;
   synced: number;
   failed: string[];
+  cleanupWarnings: string[];
 }
 
 async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
@@ -24,7 +25,7 @@ async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
     })),
   };
 
-  if (plan.items.length === 0) return { total: 0, synced: 0, failed: [] };
+  if (plan.items.length === 0) return { total: 0, synced: 0, failed: [], cleanupWarnings: [] };
 
   const result = await applyInstallPlan(plan, {
     registryFile: opts.registryFile,
@@ -33,11 +34,13 @@ async function runSync(opts: SyncOptions = {}): Promise<SyncResult> {
   const failed = result.items
     .filter((item) => item.skillsFailed.length > 0 || !item.mcp.success)
     .map((item) => item.agent);
+  const cleanupWarnings = result.items.flatMap(mcpCleanupWarnings);
 
   return {
     total: plan.items.length,
     synced: plan.items.length - failed.length,
     failed,
+    cleanupWarnings,
   };
 }
 
@@ -46,6 +49,9 @@ function summarizeSync(result: SyncResult): string {
   const lines = [`Refreshed ${result.synced}/${result.total} tracked Raindrop install${result.total === 1 ? "" : "s"}.`];
   if (result.failed.length > 0) {
     lines.push(`Failed: ${result.failed.join(", ")}`);
+  }
+  for (const warning of result.cleanupWarnings) {
+    lines.push(`Warning: ${warning}`);
   }
   return lines.join("\n");
 }

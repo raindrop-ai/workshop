@@ -42,6 +42,8 @@ import { cmdSync } from "./install/sync";
 import { cmdUninstall } from "./uninstall";
 import { stopWorkshopStartup } from "./workshop-startup";
 import { registerReplayProject } from "./agents-config";
+import { openInBrowser } from "./open-browser";
+import { cmdLogin, cmdLogout } from "./auth/login";
 
 // Umbrella state dir is `~/.raindrop/`. Workshop-specific state lives at
 // the top of it for now (single product); we'd nest further if/when a
@@ -519,29 +521,6 @@ function writeEnvLine(file: string, line: string, opts: { force: boolean }): Env
   return { kind: "wrote" };
 }
 
-function openInBrowser(url: string): void {
-  let cmd: string;
-  let args: string[];
-  if (process.platform === "darwin") {
-    cmd = "open";
-    args = [url];
-  } else if (process.platform === "win32") {
-    // `start` is a cmd.exe builtin; the empty "" is the window title arg.
-    cmd = "cmd";
-    args = ["/c", "start", "", url];
-  } else {
-    cmd = "xdg-open";
-    args = [url];
-  }
-  try {
-    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
-    child.unref();
-  } catch {
-    // If we can't spawn (no DISPLAY, no `open` on a headless box), the URL
-    // print earlier still lets the user navigate manually. Don't fail.
-  }
-}
-
 function readPid(): number | null {
   try {
     const raw = fs.readFileSync(PID_PATH, "utf8").trim();
@@ -663,6 +642,15 @@ function printRootHelp(): void {
       raindrop setup              Wire raindrop into supported agents
                                   (drops MCP + skill files in their config dirs).
       raindrop replay register    Register this project's replay config.
+
+  Raindrop cloud:
+
+      raindrop cloud setup        Connect this project to Raindrop cloud:
+                                  sign in, write the write key to ./.env, and
+                                  install the cloud skills + hosted MCP.
+      raindrop login              Sign in to Raindrop cloud (OAuth) + grab
+                                  your org write key.
+      raindrop logout             Clear stored Raindrop credentials.
 
   Day-to-day:
 
@@ -822,6 +810,22 @@ async function dispatchWorkshop(verb: string | undefined, rest: string[]): Promi
       // the per-project (.env + daemon + open UI) bootstrap.
       process.exit(await cmdSetup(process.argv.slice(3)));
       break;
+    case "login":
+      // Sign in to Raindrop cloud (OAuth) + grab the org write key. Reuses
+      // valid stored credentials without reopening the browser.
+      process.exit(await cmdLogin(process.argv.slice(3)));
+      break;
+    case "logout":
+      process.exit(await cmdLogout(process.argv.slice(3)));
+      break;
+    case "cloud": {
+      // Raindrop cloud: sign in, write the write key to ./.env, and install
+      // the cloud skills + hosted HTTP MCP into AI coding agents. No daemon —
+      // distinct from `raindrop workshop` (local debugger).
+      const { dispatchCloud } = await import("./cloud/setup");
+      process.exit(await dispatchCloud(process.argv[3], process.argv.slice(4)));
+      break;
+    }
     case "sync":
       // Refresh skill files + MCP entries in every place we previously
       // installed (per ~/.raindrop/install-registry.json). Auto-runs at

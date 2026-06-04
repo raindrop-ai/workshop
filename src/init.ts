@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import tty from "node:tty";
 import { fileURLToPath } from "node:url";
-import { applyInstallPlan } from "./install/apply";
+import { applyInstallPlan, mcpCleanupWarnings } from "./install/apply";
 import { getSupportedInstallAgents } from "./install/detect";
 import { buildInstallPlan } from "./install/plan";
 import { runInstallWizard } from "./install/wizard";
@@ -154,7 +154,16 @@ function installSucceeded(result: Awaited<ReturnType<typeof applyInstallPlan>>):
   return result.items.every((item) => item.skillsFailed.length === 0 && item.mcp.success);
 }
 
+function warnMcpCleanupFailures(result: Awaited<ReturnType<typeof applyInstallPlan>>): void {
+  for (const item of result.items) {
+    for (const msg of mcpCleanupWarnings(item)) {
+      console.warn(`setup: ${msg}`);
+    }
+  }
+}
+
 function finishSetup(args: ParsedArgs, result: Awaited<ReturnType<typeof applyInstallPlan>>): number {
+  warnMcpCleanupFailures(result);
   const success = installSucceeded(result);
   if (success && shouldStartWorkshop(args)) {
     configureStartup(args);

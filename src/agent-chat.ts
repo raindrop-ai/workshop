@@ -121,8 +121,8 @@ export function parseAgentProvider(value: unknown): AgentProviderId | null {
 
 export function defaultAgentLoadout(provider: AgentProviderId): AgentLoadout {
   return {
-    tools: RAINDROP_MCP_TOOLS.map((tool) => `raindrop.${tool.name}`),
-    mcps: ["raindrop"],
+    tools: RAINDROP_MCP_TOOLS.map((tool) => `workshop.${tool.name}`),
+    mcps: ["workshop"],
     skills: [],
     plugins: [],
     slash_commands: provider === "claude" ? [] : ["/clear", "/trace"],
@@ -139,7 +139,7 @@ export function agentAnnotationSource(provider: AgentProviderId): AgentAnnotatio
 
 export function raindropMcpToolList(): string {
   return RAINDROP_MCP_TOOLS
-    .map((tool) => `- raindrop.${tool.name}: ${tool.description}`)
+    .map((tool) => `- workshop.${tool.name}: ${tool.description}`)
     .join("\n");
 }
 

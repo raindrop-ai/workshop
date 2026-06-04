@@ -39,11 +39,11 @@ export function buildCodexArgs(input: CodexCliChatInput): string[] {
     "-C",
     input.cwd,
     "-c",
-    `mcp_servers.raindrop.command=${JSON.stringify(mcpCommand.command)}`,
+    `mcp_servers.workshop.command=${JSON.stringify(mcpCommand.command)}`,
     "-c",
-    `mcp_servers.raindrop.args=${JSON.stringify(mcpCommand.args)}`,
+    `mcp_servers.workshop.args=${JSON.stringify(mcpCommand.args)}`,
     "-c",
-    `mcp_servers.raindrop.env={RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)},RAINDROP_WORKSHOP_AGENT_PROVIDER="codex",RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}}`,
+    `mcp_servers.workshop.env={RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)},RAINDROP_WORKSHOP_AGENT_PROVIDER="codex",RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}}`,
   ];
   if (process.env.RAINDROP_WORKSHOP_CODEX_BYPASS_PERMISSIONS !== "0") {
     commonArgs.unshift("--dangerously-bypass-approvals-and-sandbox");
@@ -73,8 +73,8 @@ function directReplySystemPrompt(input: CodexCliChatInput): string {
     "You are replying inside the Raindrop Workshop chat pane.",
     "Your stdout is streamed directly into the Workshop UI.",
     "Use normal assistant text as your final answer. Markdown is supported.",
-    "Use Raindrop MCP tools to inspect traces, read span payloads, annotate findings, and show evidence in the UI.",
-    "The Raindrop MCP server is configured as `raindrop` with these tools:",
+    "Use the Workshop MCP tools to inspect traces, read span payloads, annotate findings, and show evidence in the UI.",
+    "The Workshop MCP server is configured as `workshop` with these tools:",
     raindropMcpToolList(),
     "If the user asks what Workshop tools are available, answer from that list instead of saying no tools are visible.",
     runInstruction,
@@ -305,7 +305,7 @@ function mcpToolName(item: Record<string, unknown>): string {
 function codexToolName(item: Record<string, unknown>): string {
   const name = stringValue(item.name) ?? "tool";
   const namespace = stringValue(item.namespace);
-  if (namespace === "mcp__raindrop__") return `raindrop.${name}`;
+  if (namespace === "mcp__workshop__" || namespace === "mcp__raindrop__") return `workshop.${name}`;
   return namespace ? `${namespace}.${name}` : name;
 }
 

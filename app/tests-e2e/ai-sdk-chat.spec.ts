@@ -12,6 +12,12 @@ import {
   verifyRunDetailUi,
 } from "./helpers";
 
+// 120s send budget + DB poll + the rich UI/DB assertions this canonical
+// spec carries can exceed the 90s file default. `test.setTimeout` sets the
+// per-test budget; the hook keeps the config-default 90s, which is ample
+// for the env check here.
+test.setTimeout(180_000);
+
 test.beforeAll(() => requireEnvOrThrow("OPENAI_API_KEY"));
 
 // ai-sdk-chat is the canonical real-LLM spec — it carries the richer
@@ -27,7 +33,16 @@ test("ai-sdk-chat: SDK ships → workshop UI renders + DB matches", async ({ pag
     extraEnv: { OPENAI_API_KEY: process.env.OPENAI_API_KEY! },
   });
   try {
-    const { workshopUrl, runId } = await runStandardChatTurn(page, example.url);
+    // gpt-5.4-mini is a reasoning model and this example's system prompt
+    // forces a tool fan-out (delegate_research_agent, slow_policy_scan),
+    // which intermittently pushes a single turn past the default 75s and
+    // flakes CI. Disable tools + widen the budget (matching go-chat /
+    // rust-chat, also gpt-5.4-mini). The streaming text path still drives
+    // the full SDK→ingest→DB→UI chain this canonical spec asserts on.
+    const { workshopUrl, runId } = await runStandardChatTurn(page, example.url, {
+      sendTimeoutMs: 120_000,
+      disableTools: true,
+    });
 
     // 1. Public API: outline endpoint sees a run with the prompt in a
     //    payload location (catches API-shape regressions).
