@@ -5,8 +5,6 @@ export interface ReplayRequest {
   userMessage?: string;
   model?: string;
   systemPrompt?: string;
-  apiKey?: string;
-  openaiKey?: string;
   maxIterations?: number;
   contextOverrides?: Record<string, string>;
 }
@@ -30,8 +28,6 @@ export async function startReplayStream(config: ReplayRequest, signal: AbortSign
     userMessage: config.userMessage,
     model: config.model,
     systemPrompt: config.systemPrompt,
-    apiKey: config.apiKey ?? localStorage.getItem("rd_api_key") ?? undefined,
-    openaiKey: config.openaiKey ?? localStorage.getItem("rd_openai_key") ?? undefined,
     maxIterations: config.maxIterations,
     contextOverrides: config.contextOverrides,
   }, { signal }));

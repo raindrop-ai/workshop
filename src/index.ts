@@ -56,6 +56,13 @@ const LOG_PATH = path.join(STATE_DIR, "raindrop_workshop.log");
 const DEFAULT_PORT = 5899;
 const MAX_PORT = 65535;
 const PORT_ENV = "RAINDROP_WORKSHOP_PORT";
+const BIND_HOST_ENV = "RAINDROP_WORKSHOP_BIND_HOST";
+const DEFAULT_BIND_HOST = WORKSHOP_BIND_HOST;
+
+function getConfiguredBindHost(): string {
+  const raw = process.env[BIND_HOST_ENV]?.trim();
+  return raw ? raw : DEFAULT_BIND_HOST;
+}
 
 function printWorkshopAccess(port: number, opts: { pid?: number | null; logs?: boolean } = {}): void {
   console.log("");
@@ -77,9 +84,10 @@ function printPortFallback(requestedPort: number, port: number): void {
 async function runBackend(): Promise<void> {
   const requestedPort = getConfiguredPort();
   const port = hasExplicitPort() ? requestedPort : await findFreePort(requestedPort);
+  const bindHost = getConfiguredBindHost();
   const { server } = await createServer(port);
 
-  server.listen(port, WORKSHOP_BIND_HOST, () => {
+  server.listen(port, bindHost, () => {
     printPortFallback(requestedPort, port);
     printWorkshopAccess(port);
   });

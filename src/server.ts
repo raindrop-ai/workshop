@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
 import type { AddressInfo } from "net";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
 import { normalizeOtelId } from "./ids";
@@ -23,8 +24,10 @@ import { runCodexCliChat } from "./codex-cli-chat";
 import {
   agentAnnotationSource,
   agentProviderLabel,
+  cloudMcpUrl,
   defaultAgentLoadout,
   getAgentProvider,
+  hasCloudMcpConfigured,
   parseAgentProvider,
   setAgentProvider,
   type AgentProviderId,
@@ -44,6 +47,12 @@ import {
   parseAskUserQuestionHookInput,
 } from "./claude-ask-user-question";
 import { createViewingRegistry } from "./viewing-registry";
+import { importCloudTrace, ImportCloudTraceRefused } from "./cloud/import-trace";
+import { QueryApiError, queryApiGet } from "./cloud/query-client";
+import { normalizeQueryApiKey } from "./cloud/query-key";
+import { TransientQueryApiKeyStore } from "./cloud/transient-keys";
+import { CLOUD_MCP_PROXY_PATH, bearerTokenFromHeader, createCloudMcpProxy } from "./cloud/cloud-mcp-proxy";
+import { createLocalOriginGuard, parseAllowedOriginsEnv } from "./local-origin-guard";
 import { isLoopbackRemoteAddress } from "./local-access";
 import {
   createAnnotation,
@@ -55,6 +64,14 @@ import {
   type AnnotationSource,
 } from "./annotations";
 import { replayDefaultDemoTraces } from "./demo-traces";
+import {
+  getEffectiveSecret,
+  getSecretStatus,
+  getSecretStatuses,
+  parseSecretKey,
+  setStoredSecret,
+  deleteStoredSecret,
+} from "./secret-store";
 
 function parseAnnotationSource(value: unknown): AnnotationSource | null {
   return value === "user" || value === "claude-code" || value === "codex" ? value : null;
@@ -173,8 +190,7 @@ async function streamOpenAiDemoChat(req: express.Request, res: express.Response)
     return;
   }
 
-  const clientKey = req.header("x-rd-openai-key")?.trim();
-  const apiKey = clientKey || process.env.OPENAI_API_KEY || process.env.RAINDROP_OPENAI_API_KEY;
+  const apiKey = getEffectiveSecret("openai");
   if (!apiKey) {
     res.status(400).json({ error: "No OpenAI API key. Add one in Workshop Settings or set OPENAI_API_KEY." });
     return;
@@ -360,7 +376,6 @@ function demoChatHtml(): string {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-rd-openai-key": localStorage.getItem("rd_openai_key") || "",
           },
           body: JSON.stringify({ messages }),
         });
@@ -424,10 +439,62 @@ export async function createServer(port: number) {
   let anthropicModelsCache: { expiresAt: number; models: string[] } | null = null;
   const claudeCliChatEnabled =
     port !== 0 && process.env.RAINDROP_WORKSHOP_CLAUDE_CLI_CHAT !== "0";
+  const transientQueryApiKeys = new TransientQueryApiKeyStore();
+  const localOriginGuard = createLocalOriginGuard({
+    extraAllowedOrigins: parseAllowedOriginsEnv(process.env.RAINDROP_WORKSHOP_ALLOWED_ORIGINS),
+  });
 
   function backendUrl(): string {
     const addr = server.address() as AddressInfo | null;
     return `http://127.0.0.1:${addr?.port ?? port}`;
+  }
+
+  function createTransientQueryApiKeyToken(queryApiKey: string): string | null {
+    return transientQueryApiKeys.issue(queryApiKey);
+  }
+
+  /**
+   * Resolve the upstream cloud key used to talk to mcp.raindrop.ai /
+   * query.raindrop.ai *from this daemon*. The daemon's env var wins;
+   * otherwise a validated browser-provided key (header/body) is used.
+   * Returns null when no cloud key is available at all.
+   */
+  function resolveUpstreamCloudKey(
+    req: express.Request,
+    body: Record<string, unknown>,
+  ): string | null {
+    const daemonKey = getEffectiveSecret("query");
+    if (daemonKey) return daemonKey;
+    return resolveRequestQueryApiKey(req, body);
+  }
+
+  /**
+   * Resolve the Raindrop Query API key for a request.
+   *
+   * The daemon's own `RAINDROP_QUERY_API_KEY` env var always wins: if the
+   * operator has configured one, we never trust an attacker-controlled value
+   * piped through the browser. Otherwise we accept a validated key from the
+   * Authorization header first, then the JSON body, then an MCP-child
+   * transient token. Returning null means "defer to process.env".
+   */
+  function resolveRequestQueryApiKey(
+    req: express.Request,
+    body: Record<string, unknown>,
+  ): string | null {
+    if (getEffectiveSecret("query")) return null;
+    const headerKey = normalizeQueryApiKey(bearerTokenFromHeader(req.header("authorization")));
+    if (headerKey) return headerKey;
+    const direct = normalizeQueryApiKey(body.query_api_key);
+    if (direct) return direct;
+    const token = typeof body.query_api_key_token === "string" ? body.query_api_key_token.trim() : "";
+    return token ? transientQueryApiKeys.resolve(token) : null;
+  }
+
+  function hasConnectedUi(): boolean {
+    for (const ws of clients) {
+      if (ws.readyState === WebSocket.OPEN) return true;
+    }
+    return false;
   }
 
   function activeWorkspaceOrError(res: express.Response): ActiveWorkspace | null {
@@ -435,6 +502,74 @@ export async function createServer(port: number) {
     if (workspace) return workspace;
     res.status(409).json({ error: ACTIVE_WORKSPACE_MISSING_MESSAGE });
     return null;
+  }
+
+  function expandHome(inputPath: string): string {
+    return inputPath === "~" || inputPath.startsWith("~/")
+      ? path.join(os.homedir(), inputPath.slice(2))
+      : inputPath;
+  }
+
+  function resolveDirectory(inputPath: string): string {
+    const resolved = path.resolve(expandHome(inputPath));
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) throw new Error(`directory not found: ${resolved}`);
+    return resolved;
+  }
+
+  function isDirectoryEntry(entry: fs.Dirent, parentPath: string): boolean {
+    if (entry.name === "." || entry.name === "..") return false;
+    if (entry.isDirectory()) return true;
+    if (!entry.isSymbolicLink()) return false;
+    try {
+      return fs.statSync(path.join(parentPath, entry.name)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  function listSubdirectories(parentPath: string): { name: string; path: string }[] {
+    return fs.readdirSync(parentPath, { withFileTypes: true })
+      .filter((entry) => isDirectoryEntry(entry, parentPath))
+      .map((entry) => ({ name: entry.name, path: path.join(parentPath, entry.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function requestCwd(req: express.Request): string | null {
+    const body = req.body as Record<string, unknown> | null;
+    const value = typeof req.query.cwd === "string"
+      ? req.query.cwd
+      : typeof body?.cwd === "string"
+        ? body.cwd
+        : null;
+    return value && value.trim() ? value : null;
+  }
+
+  function cwdFromRequestOrActive(req: express.Request, res: express.Response): string | null {
+    const requested = requestCwd(req);
+    if (requested) {
+      try {
+        return resolveDirectory(requested);
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+        return null;
+      }
+    }
+    const workspace = activeWorkspaceOrError(res);
+    return workspace?.cwd ?? null;
+  }
+
+  function cloudImportError(res: express.Response, err: unknown): void {
+    if (err instanceof ImportCloudTraceRefused) {
+      const status = err.reason === "no_spans" ? 404 : 413;
+      res.status(status).json({ error: err.message, code: err.reason, observed: err.observed, limit: err.limit });
+      return;
+    }
+    if (err instanceof QueryApiError) {
+      res.status(err.status === 401 || err.status === 403 ? 502 : err.status).json({ error: err.message });
+      return;
+    }
+    res.status(500).json({ error: (err as Error).message ?? "Failed to import cloud trace" });
   }
 
   function rememberClaudeLoadout(event: unknown) {
@@ -458,10 +593,10 @@ export async function createServer(port: number) {
     broadcast("agent_loadout", latestClaudeLoadout);
   }
 
-  function currentLoadout(workspace: ActiveWorkspace) {
+  function currentLoadout(cwd: string) {
     if (agentProvider === "codex") return defaultAgentLoadout("codex");
     if (!latestClaudeLoadout) {
-      latestClaudeLoadout = getLatestClaudeLoadout(workspace.cwd);
+      latestClaudeLoadout = getLatestClaudeLoadout(cwd);
     }
     return latestClaudeLoadout ?? defaultAgentLoadout("claude");
   }
@@ -475,7 +610,7 @@ export async function createServer(port: number) {
     ws.send(JSON.stringify({ event: "agent_provider", data: { provider: agentProvider } }));
     const workspace = getActiveWorkspace();
     if (workspace) {
-      ws.send(JSON.stringify({ event: "agent_loadout", data: currentLoadout(workspace) }));
+      ws.send(JSON.stringify({ event: "agent_loadout", data: currentLoadout(workspace.cwd) }));
     }
     for (const pending of askUserQuestions.active()) {
       ws.send(JSON.stringify({ event: "claude_ask_user_question", data: pending }));
@@ -537,7 +672,10 @@ export async function createServer(port: number) {
 
   // Block cross-origin requests to everything except the ingestion routes
   // (handled above). Non-browser callers (MCP stdio, curl, local SDKs) don't
-  // send Origin/Host so they pass through unaffected.
+  // send Origin/Host so they pass through unaffected. Mounted before the
+  // cloud MCP proxy so a hostile browser page can't drive proxied traffic
+  // through the daemon — the legitimate caller (the spawned agent
+  // subprocess) is a Node fetch that sends neither Origin nor a remote Host.
   app.use((req, res, next) => {
     if (INGEST_PATHS.has(req.path)) return next();
     if (!isAllowedLocalAccess(req.headers.host, req.headers.origin)) {
@@ -545,6 +683,18 @@ export async function createServer(port: number) {
     }
     next();
   });
+
+  // Mount the cloud MCP proxy before express.json so it can stream the raw
+  // request body (small JSON-RPC envelopes) and, more importantly, the raw
+  // response (Server-Sent Event chunks) without buffering.
+  app.use(
+    CLOUD_MCP_PROXY_PATH,
+    createCloudMcpProxy({
+      upstreamUrl: () => cloudMcpUrl(),
+      resolveBearer: (token) => transientQueryApiKeys.resolve(token),
+    }),
+  );
+
 
   app.use(express.json({ limit: "50mb" }));
   // Accept protobuf bodies so Traceloop OTLP exports aren't silently dropped
@@ -871,9 +1021,7 @@ export async function createServer(port: number) {
     }
   });
   app.get("/api/ui/connected", (_req, res) => {
-    let connected = false;
-    for (const ws of clients) { if (ws.readyState === WebSocket.OPEN) { connected = true; break; } }
-    res.json({ connected });
+    res.json({ connected: hasConnectedUi() });
   });
   app.get("/api/ui/viewing", (_req, res) => {
     const view = viewingRegistry.getMostRecentView();
@@ -888,6 +1036,85 @@ export async function createServer(port: number) {
     if (run) { res.json({ ...run, run_id: view.run_id, selected_span_id: view.selected_span_id, selected_span, ts: view.ts }); return; }
     res.json({ run_id: view.run_id, selected_span_id: view.selected_span_id, selected_span, ts: view.ts });
   });
+
+  app.get("/api/secrets", localOriginGuard, (_req, res) => {
+    res.json({ keys: getSecretStatuses() });
+  });
+
+  app.put("/api/secrets/:key", localOriginGuard, (req, res) => {
+    const key = parseSecretKey(req.params.key);
+    if (!key) {
+      res.status(404).json({ error: "unknown secret key" });
+      return;
+    }
+    const value = typeof req.body?.value === "string" ? req.body.value.trim() : "";
+    if (!value) {
+      deleteStoredSecret(key);
+      broadcast("secrets_updated", { key, status: getSecretStatus(key) });
+      res.json({ key, status: getSecretStatus(key) });
+      return;
+    }
+    if (key === "query" && !normalizeQueryApiKey(value)) {
+      res.status(400).json({ error: "Query API key must be printable ASCII, 16-512 characters, with no whitespace." });
+      return;
+    }
+    setStoredSecret(key, value);
+    broadcast("secrets_updated", { key, status: getSecretStatus(key) });
+    res.json({ key, status: getSecretStatus(key) });
+  });
+
+  app.delete("/api/secrets/:key", localOriginGuard, (req, res) => {
+    const key = parseSecretKey(req.params.key);
+    if (!key) {
+      res.status(404).json({ error: "unknown secret key" });
+      return;
+    }
+    deleteStoredSecret(key);
+    broadcast("secrets_updated", { key, status: getSecretStatus(key) });
+    res.json({ key, status: getSecretStatus(key) });
+  });
+
+  function queryProxyParams(req: express.Request): Record<string, string> {
+    const url = new URL(req.originalUrl, "http://127.0.0.1");
+    const params: Record<string, string> = {};
+    for (const [key, value] of url.searchParams.entries()) {
+      if (value) params[key] = value;
+    }
+    return params;
+  }
+
+  async function sendQueryApiProxy(
+    req: express.Request,
+    res: express.Response,
+    path: string,
+    defaults?: Record<string, string | number>,
+  ): Promise<void> {
+    try {
+      const params = { ...defaults, ...queryProxyParams(req) };
+      const body = await queryApiGet(path, params, getEffectiveSecret("query"));
+      res.json(body);
+    } catch (err) {
+      if (err instanceof QueryApiError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      res.status(500).json({ error: (err as Error).message || "Query API request failed" });
+    }
+  }
+
+  app.get("/api/query/signals", localOriginGuard, (req, res) => {
+    void sendQueryApiProxy(req, res, "/v1/signals", { limit: 100 });
+  });
+  app.get("/api/query/events/search", localOriginGuard, (req, res) => {
+    void sendQueryApiProxy(req, res, "/v1/events/search");
+  });
+  app.get("/api/query/events", localOriginGuard, (req, res) => {
+    void sendQueryApiProxy(req, res, "/v1/events");
+  });
+  app.get("/api/query/traces", localOriginGuard, (req, res) => {
+    void sendQueryApiProxy(req, res, "/v1/traces", { limit: 500 });
+  });
+
   app.post("/api/agent-ui/commands", (req, res) => {
     const body = req.body && typeof req.body === "object" ? req.body : {};
     const command = canonicalizeAgentUiCommand(body as Record<string, unknown>);
@@ -918,6 +1145,31 @@ export async function createServer(port: number) {
     }
     broadcast("agent_ui_command", command);
     res.json({ ok: true, command });
+  });
+  app.post("/api/cloud/traces/import", localOriginGuard, async (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const eventId = typeof body.event_id === "string" ? body.event_id.trim() : "";
+    if (!eventId) {
+      res.status(400).json({ error: "event_id required" });
+      return;
+    }
+
+    const openInUi = body.open_in_ui === true;
+    try {
+      const result = await importCloudTrace(eventId, resolveUpstreamCloudKey(req, body));
+      broadcast("spans", { runIds: [result.run_id], count: result.span_count });
+      if (openInUi) {
+        broadcast("agent_ui_command", { type: "navigate_to_run", run_id: result.run_id });
+      }
+      res.json({
+        ...result,
+        navigation_requested: openInUi,
+        ui_connected: hasConnectedUi(),
+        next_tools: ["get_run_outline", "search_run", "get_span_payload", "annotate", "show_in_ui"],
+      });
+    } catch (err) {
+      cloudImportError(res, err);
+    }
   });
   app.get("/api/spans/:id", (req, res) => {
     const row = getSpanMeta(req.params.id) as any;
@@ -1117,6 +1369,24 @@ export async function createServer(port: number) {
     });
   });
 
+  app.get("/api/directories", localOriginGuard, (req, res) => {
+    const requestedPath = typeof req.query.path === "string" && req.query.path.trim()
+      ? req.query.path
+      : getActiveWorkspace()?.cwd ?? os.homedir();
+    try {
+      const currentPath = resolveDirectory(requestedPath);
+      const parent = path.dirname(currentPath);
+      res.json({
+        path: currentPath,
+        parent: parent === currentPath ? null : parent,
+        home: os.homedir(),
+        entries: listSubdirectories(currentPath),
+      });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
   app.post("/api/workspace/active", (req, res) => {
     const cwd = (req.body as Record<string, unknown> | null)?.cwd;
     if (typeof cwd !== "string" || !cwd.trim()) {
@@ -1154,13 +1424,13 @@ export async function createServer(port: number) {
     agentProvider = setAgentProvider(provider);
     broadcast("agent_provider", { provider: agentProvider });
     const workspace = getActiveWorkspace();
-    if (workspace) broadcast("agent_loadout", currentLoadout(workspace));
+    if (workspace) broadcast("agent_loadout", currentLoadout(workspace.cwd));
     res.json({ provider: agentProvider });
   });
 
   app.get("/api/agent/sessions", (req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
     const requestedProvider = req.query.provider === undefined
       ? null
       : parseAgentProvider(req.query.provider);
@@ -1170,23 +1440,23 @@ export async function createServer(port: number) {
     }
     const targetProvider = requestedProvider ?? agentProvider;
     if (targetProvider === "codex") {
-      res.json(listCodexSessions(workspace.cwd));
+      res.json(listCodexSessions(cwd));
       return;
     }
-    res.json(listClaudeSessions(workspace.cwd));
+    res.json(listClaudeSessions(cwd));
   });
 
-  app.get("/api/agent/loadout", (_req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
-    res.json(currentLoadout(workspace));
+  app.get("/api/agent/loadout", (req, res) => {
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
+    res.json(currentLoadout(cwd));
   });
 
   app.get("/api/agent/sessions/:id", (req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
     if (agentProvider === "codex") {
-      const session = getCodexSession(workspace.cwd, req.params.id);
+      const session = getCodexSession(cwd, req.params.id);
       if (!session) {
         res.status(404).json({ error: "Codex session not found" });
         return;
@@ -1194,7 +1464,7 @@ export async function createServer(port: number) {
       res.json(session);
       return;
     }
-    const session = getClaudeSession(workspace.cwd, req.params.id);
+    const session = getClaudeSession(cwd, req.params.id);
     if (!session) {
       res.status(404).json({ error: "Claude session not found" });
       return;
@@ -1202,8 +1472,9 @@ export async function createServer(port: number) {
     res.json(session);
   });
 
-  app.post("/api/agent/messages", async (req, res) => {
-    const { content, session_id, run_id, client_message_id } = req.body ?? {};
+  app.post("/api/agent/messages", localOriginGuard, async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { content, session_id, run_id, client_message_id } = body;
     if (typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "content required" });
       return;
@@ -1217,13 +1488,27 @@ export async function createServer(port: number) {
       res.status(409).json({ error: "Claude Code chat is disabled" });
       return;
     }
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
 
     let providerSessionId = typeof session_id === "string" && session_id ? session_id : null;
+    // Claude Code owns its resume-token validity. Workshop's JSONL reader can
+    // miss a valid Claude session when Claude stores it under a normalized
+    // project path or before the file is visible here, so pass --resume through
+    // and let Claude decide. Codex sessions are local Workshop-readable state.
+    if (providerSessionId && requestProvider === "codex") {
+      const existingSession = getCodexSession(cwd, providerSessionId);
+      if (!existingSession) {
+        res.status(404).json({ error: `${agentProviderLabel(requestProvider)} session not found for ${cwd}` });
+        return;
+      }
+    }
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
       : randomUUID();
+    const requestQueryApiKey = resolveRequestQueryApiKey(req, body);
+    const upstreamCloudKey = resolveUpstreamCloudKey(req, body);
+    const queryApiKeyToken = upstreamCloudKey ? createTransientQueryApiKeyToken(upstreamCloudKey) : null;
     let text = "";
     let errorText = "";
     const events: unknown[] = [];
@@ -1241,9 +1526,11 @@ export async function createServer(port: number) {
       const chatInput = {
         backendUrl: backendUrl(),
         content,
-        cwd: workspace.cwd,
+        cwd,
         runId: typeof run_id === "string" ? run_id : null,
         resumeSessionId: providerSessionId,
+        queryApiKey: requestQueryApiKey,
+        queryApiKeyToken,
       };
       const result = requestProvider === "codex"
         ? await runCodexCliChat(chatInput, {
@@ -1301,8 +1588,8 @@ export async function createServer(port: number) {
         events,
         session: providerSessionId
           ? requestProvider === "claude"
-            ? getClaudeSession(workspace.cwd, providerSessionId)
-            : getCodexSession(workspace.cwd, providerSessionId)
+            ? getClaudeSession(cwd, providerSessionId)
+            : getCodexSession(cwd, providerSessionId)
           : null,
       });
     } catch (err) {
@@ -1312,28 +1599,30 @@ export async function createServer(port: number) {
         session_id: providerSessionId,
         events,
       });
+    } finally {
+      transientQueryApiKeys.release(queryApiKeyToken);
     }
   });
 
-  app.get("/api/claude/sessions", (_req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
-    res.json(listClaudeSessions(workspace.cwd));
+  app.get("/api/claude/sessions", (req, res) => {
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
+    res.json(listClaudeSessions(cwd));
   });
 
-  app.get("/api/claude/loadout", (_req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
+  app.get("/api/claude/loadout", (req, res) => {
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
     if (!latestClaudeLoadout) {
-      latestClaudeLoadout = getLatestClaudeLoadout(workspace.cwd);
+      latestClaudeLoadout = getLatestClaudeLoadout(cwd);
     }
     res.json(latestClaudeLoadout ?? { tools: [], mcps: [], skills: [], plugins: [], slash_commands: [] });
   });
 
   app.get("/api/claude/sessions/:id", (req, res) => {
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
-    const session = getClaudeSession(workspace.cwd, req.params.id);
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
+    const session = getClaudeSession(cwd, req.params.id);
     if (!session) {
       res.status(404).json({ error: "Claude session not found" });
       return;
@@ -1367,8 +1656,9 @@ export async function createServer(port: number) {
     res.json({ ok: true });
   });
 
-  app.post("/api/claude/messages", async (req, res) => {
-    const { content, session_id, run_id, client_message_id } = req.body ?? {};
+  app.post("/api/claude/messages", localOriginGuard, async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { content, session_id, run_id, client_message_id } = body;
     if (typeof content !== "string" || !content.trim()) {
       res.status(400).json({ error: "content required" });
       return;
@@ -1381,13 +1671,16 @@ export async function createServer(port: number) {
       res.status(409).json({ error: "Claude Code chat is disabled" });
       return;
     }
-    const workspace = activeWorkspaceOrError(res);
-    if (!workspace) return;
+    const cwd = cwdFromRequestOrActive(req, res);
+    if (!cwd) return;
 
     let claudeSessionId = typeof session_id === "string" && session_id ? session_id : null;
     const clientMessageId = typeof client_message_id === "string" && client_message_id
       ? client_message_id
       : randomUUID();
+    const requestQueryApiKey = resolveRequestQueryApiKey(req, body);
+    const upstreamCloudKey = resolveUpstreamCloudKey(req, body);
+    const queryApiKeyToken = upstreamCloudKey ? createTransientQueryApiKeyToken(upstreamCloudKey) : null;
     let text = "";
     let errorText = "";
     const events: unknown[] = [];
@@ -1403,9 +1696,11 @@ export async function createServer(port: number) {
         {
           backendUrl: backendUrl(),
           content,
-          cwd: workspace.cwd,
+          cwd,
           runId: typeof run_id === "string" ? run_id : null,
           resumeSessionId: claudeSessionId,
+          queryApiKey: requestQueryApiKey,
+          queryApiKeyToken,
         },
         {
           onEvent(event) {
@@ -1442,7 +1737,7 @@ export async function createServer(port: number) {
         session_id: claudeSessionId,
         text,
         events,
-        session: claudeSessionId ? getClaudeSession(workspace.cwd, claudeSessionId) : null,
+        session: claudeSessionId ? getClaudeSession(cwd, claudeSessionId) : null,
       });
     } catch (err) {
       res.status(500).json({
@@ -1451,6 +1746,8 @@ export async function createServer(port: number) {
         session_id: claudeSessionId,
         events,
       });
+    } finally {
+      transientQueryApiKeys.release(queryApiKeyToken);
     }
   });
 
@@ -1470,6 +1767,11 @@ export async function createServer(port: number) {
         mode: "codex_exec_stream",
         state: "green",
       },
+      cloud_mcp: {
+        configured: hasCloudMcpConfigured(getEffectiveSecret("query")),
+        env_var: getSecretStatus("query").env_var,
+        source: getSecretStatus("query").source,
+      },
     });
   });
 
@@ -1479,8 +1781,7 @@ export async function createServer(port: number) {
       return;
     }
 
-    const clientKey = req.header("x-rd-api-key");
-    const apiKey = clientKey || process.env.ANTHROPIC_API_KEY;
+    const apiKey = getEffectiveSecret("anthropic");
     if (!apiKey) {
       res.status(400).json({ error: "No Anthropic API key. Add one in Settings." });
       return;
@@ -1758,9 +2059,9 @@ export async function createServer(port: number) {
 
   // Summarize an event using Haiku (server-side to avoid CORS)
   app.post("/api/summarize", async (req, res) => {
-    const { content, apiKey } = req.body;
+    const { content } = req.body;
     if (!content) { res.status(400).json({ error: "content is required" }); return; }
-    const key = apiKey || process.env.ANTHROPIC_API_KEY;
+    const key = getEffectiveSecret("anthropic");
     if (!key) { res.status(400).json({ error: "No Anthropic API key" }); return; }
     try {
       const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1876,11 +2177,9 @@ export async function createServer(port: number) {
     const model = requestedModel ?? continuation.model ?? "claude-sonnet-4-20250514";
     const provider = detectProvider(model, continuation.provider);
     const env = providerEnvForProvider(provider);
-    const clientOpenaiKey = typeof body.openaiKey === "string" ? body.openaiKey : null;
-    const clientAnthropicKey = typeof body.apiKey === "string" ? body.apiKey : null;
     const apiKey = provider === "openai"
-      ? (clientOpenaiKey || process.env.OPENAI_API_KEY)
-      : (clientAnthropicKey || process.env.ANTHROPIC_API_KEY);
+      ? getEffectiveSecret("openai")
+      : getEffectiveSecret("anthropic");
 
     if (!apiKey) {
       res.json({
@@ -1889,7 +2188,7 @@ export async function createServer(port: number) {
         provider,
         env_var: env.envVar,
         cwd: workspace?.cwd ?? null,
-        message: `Add ${env.envVar}=... to ${workspace?.cwd ? `${workspace.cwd}/.env` : "the active project .env"} and restart Workshop.`,
+        message: `Add a ${provider === "openai" ? "OpenAI" : "Anthropic"} API key in Workshop Settings, or set ${env.envVar}=... and restart Workshop.`,
       });
       return;
     }
@@ -1976,7 +2275,7 @@ export async function createServer(port: number) {
 
   // Replay endpoint
   app.post("/api/replay", async (req, res) => {
-    const { runId, userMessage, model, systemPrompt, apiKey, openaiKey, maxIterations, contextOverrides } = req.body;
+    const { runId, userMessage, model, systemPrompt, maxIterations, contextOverrides } = req.body;
     if (!runId) { res.status(400).json({ error: "runId is required" }); return; }
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -1985,7 +2284,17 @@ export async function createServer(port: number) {
 
     try {
       await runReplay(
-        { sourceRunId: runId, mode: "local", userMessage, model, systemPrompt, apiKey, openaiKey, maxIterations, contextOverrides },
+        {
+          sourceRunId: runId,
+          mode: "local",
+          userMessage,
+          model,
+          systemPrompt,
+          apiKey: getEffectiveSecret("anthropic") ?? undefined,
+          openaiKey: getEffectiveSecret("openai") ?? undefined,
+          maxIterations,
+          contextOverrides,
+        },
         res,
         broadcast,
       );

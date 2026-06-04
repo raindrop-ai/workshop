@@ -42,7 +42,13 @@ function dim(text: string): string {
  * `cloud setup` (sign in + write key + hosted MCP/skills) for the same scope. */
 export async function offerCloudInstrumentation(opts: OfferCloudOptions): Promise<void> {
   if (cloudAlreadyConfigured(opts.registryFile)) {
-    console.log(dim("Raindrop Cloud is already set up here, skipping."));
+    console.log(dim("Raindrop Cloud is already set up here."));
+    console.log(
+      dim(`  Run /raindrop-setup inside your AI coding agent to instrument for cloud (events go to ${APP_ORIGIN}).`),
+    );
+    console.log(
+      dim("  Manage it with `raindrop cloud setup` (reconfigure) or `raindrop cloud uninstall` (remove)."),
+    );
     return;
   }
 

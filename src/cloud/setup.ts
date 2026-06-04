@@ -179,7 +179,7 @@ export function buildSummaryLines(
     lines.push(
       "",
       "Next steps:",
-      "  Run /raindrop-setup inside your AI coding agent to instrument your app.",
+      "  Run /raindrop-setup inside your AI coding agent to instrument for Raindrop Cloud.",
       `  Then watch events arrive at ${APP_ORIGIN}.`,
     );
   } else {

@@ -2,9 +2,13 @@ import { spawn, type ChildProcessByStdio } from "child_process";
 import type { Readable } from "stream";
 import {
   agentAnnotationSource,
+  chatChildEnv,
   defaultAgentLoadout,
-  raindropMcpToolList,
+  hasCloudMcpConfigured,
+  localCloudMcpProxyUrl,
+  QUERY_API_KEY_TOKEN_ENV,
   resolveWorkshopMcpCommand,
+  workshopSidepanelPrompt,
   type AgentCliChatHandlers,
   type AgentCliChatInput,
   type AgentCliChatResult,
@@ -20,10 +24,9 @@ export function runCodexCliChat(
   input: CodexCliChatInput,
   handlers: CodexCliChatHandlers,
 ): Promise<CodexCliChatResult> {
-  const args = buildCodexArgs(input);
-  const child = spawn(process.env.RAINDROP_WORKSHOP_CODEX_BIN ?? "codex", args, {
+  const child = spawn(process.env.RAINDROP_WORKSHOP_CODEX_BIN ?? "codex", buildCodexArgs(input), {
     cwd: input.cwd,
-    env: { ...process.env },
+    env: chatChildEnv(input.queryApiKeyToken),
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (input.abortSignal) {
@@ -35,6 +38,14 @@ export function runCodexCliChat(
 
 export function buildCodexArgs(input: CodexCliChatInput): string[] {
   const mcpCommand = resolveWorkshopMcpCommand();
+  const workshopEnv = [
+    `RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)}`,
+    `RAINDROP_WORKSHOP_AGENT_PROVIDER="codex"`,
+    `RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}`,
+  ];
+  if (input.queryApiKeyToken?.trim()) {
+    workshopEnv.push(`RAINDROP_WORKSHOP_QUERY_API_KEY_TOKEN=${JSON.stringify(input.queryApiKeyToken.trim())}`);
+  }
   const commonArgs = [
     "-C",
     input.cwd,
@@ -43,8 +54,20 @@ export function buildCodexArgs(input: CodexCliChatInput): string[] {
     "-c",
     `mcp_servers.workshop.args=${JSON.stringify(mcpCommand.args)}`,
     "-c",
-    `mcp_servers.workshop.env={RAINDROP_WORKSHOP_URL=${JSON.stringify(input.backendUrl)},RAINDROP_WORKSHOP_AGENT_PROVIDER="codex",RAINDROP_WORKSHOP_ANNOTATION_SOURCE=${JSON.stringify(agentAnnotationSource("codex"))}}`,
+    `mcp_servers.workshop.env={${workshopEnv.join(",")}}`,
   ];
+  if (hasCloudMcpConfigured(input.queryApiKey, input.queryApiKeyToken)) {
+    // Point at the daemon's local proxy and authenticate via the transient
+    // per-spawn token env var. The Codex process never has the real Raindrop
+    // Query API key in its environment; the daemon resolves the token to the
+    // key server-side before forwarding upstream.
+    commonArgs.push(
+      "-c",
+      `mcp_servers.raindrop_cloud.url=${JSON.stringify(localCloudMcpProxyUrl(input.backendUrl))}`,
+      "-c",
+      `mcp_servers.raindrop_cloud.bearer_token_env_var=${JSON.stringify(QUERY_API_KEY_TOKEN_ENV)}`,
+    );
+  }
   if (process.env.RAINDROP_WORKSHOP_CODEX_BYPASS_PERMISSIONS !== "0") {
     commonArgs.unshift("--dangerously-bypass-approvals-and-sandbox");
   } else {
@@ -65,20 +88,13 @@ export function buildCodexArgs(input: CodexCliChatInput): string[] {
 }
 
 function directReplySystemPrompt(input: CodexCliChatInput): string {
-  const runInstruction = input.runId
-    ? `The current Workshop trace is ${input.runId}. Use the Raindrop trace tools as needed when the user asks about "this trace" or the trace context matters; get_run_outline is usually the fastest first read, and get_span_payload is for exact raw payload evidence.`
-    : "No Workshop trace is currently selected.";
-
-  return [
-    "You are replying inside the Raindrop Workshop chat pane.",
-    "Your stdout is streamed directly into the Workshop UI.",
-    "Use normal assistant text as your final answer. Markdown is supported.",
-    "Use the Workshop MCP tools to inspect traces, read span payloads, annotate findings, and show evidence in the UI.",
-    "The Workshop MCP server is configured as `workshop` with these tools:",
-    raindropMcpToolList(),
-    "If the user asks what Workshop tools are available, answer from that list instead of saying no tools are visible.",
-    runInstruction,
-  ].join(" ");
+  return workshopSidepanelPrompt({
+    provider: "codex",
+    localMcpName: "workshop",
+    runId: input.runId,
+    queryApiKey: input.queryApiKey,
+    queryApiKeyToken: input.queryApiKeyToken,
+  });
 }
 
 function userPrompt(input: CodexCliChatInput): string {

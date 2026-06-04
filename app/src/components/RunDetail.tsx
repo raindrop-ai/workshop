@@ -1054,12 +1054,7 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
   useEffect(() => {
     let cancelled = false;
     const fetchModels = () => {
-      const key = localStorage.getItem("rd_api_key") ?? "";
-      // No key → no point hitting the endpoint (it would 400 and spam the
-      // console). Re-runs when the user adds a key via the storage / custom
-      // event listeners below.
-      if (!key.trim()) return;
-      fetch("/api/models/anthropic", { headers: { "x-rd-api-key": key } })
+      fetch("/api/models/anthropic")
         .then(r => r.ok ? r.json() : null)
         .then((data) => {
           if (cancelled) return;
@@ -1068,13 +1063,10 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
         .catch(() => {});
     };
     fetchModels();
-    const onStorage = (e: StorageEvent) => { if (e.key === "rd_api_key") fetchModels(); };
     const onKeyChange = () => fetchModels();
-    window.addEventListener("storage", onStorage);
     window.addEventListener("workshop:api-key-change", onKeyChange);
     return () => {
       cancelled = true;
-      window.removeEventListener("storage", onStorage);
       window.removeEventListener("workshop:api-key-change", onKeyChange);
     };
   }, []);

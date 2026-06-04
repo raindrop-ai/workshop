@@ -2,7 +2,12 @@ import { spawn, type ChildProcessByStdio } from "child_process";
 import type { Readable } from "stream";
 import {
   agentAnnotationSource,
+  chatChildEnv,
+  hasCloudMcpConfigured,
+  localCloudMcpProxyUrl,
+  QUERY_API_KEY_TOKEN_ENV,
   resolveWorkshopMcpCommand,
+  workshopSidepanelPrompt,
   type AgentLoadout,
   type AgentStreamEvent,
 } from "./agent-chat";
@@ -15,6 +20,8 @@ export interface ClaudeCliChatInput {
   sessionId?: string | null;
   userMessageId?: string | null;
   resumeSessionId?: string | null;
+  queryApiKey?: string | null;
+  queryApiKeyToken?: string | null;
   abortSignal?: AbortSignal;
 }
 
@@ -36,10 +43,9 @@ export function runClaudeCliChat(
   input: ClaudeCliChatInput,
   handlers: ClaudeCliChatHandlers,
 ): Promise<ClaudeCliChatResult> {
-  const args = buildClaudeArgs(input);
-  const child = spawn(process.env.RAINDROP_WORKSHOP_CLAUDE_BIN ?? "claude", args, {
+  const child = spawn(process.env.RAINDROP_WORKSHOP_CLAUDE_BIN ?? "claude", buildClaudeArgs(input), {
     cwd: input.cwd,
-    env: { ...process.env },
+    env: chatChildEnv(input.queryApiKeyToken),
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (input.abortSignal) {
@@ -51,19 +57,10 @@ export function runClaudeCliChat(
 
 export function buildClaudeArgs(input: ClaudeCliChatInput): string[] {
   const mcpCommand = resolveWorkshopMcpCommand();
-  const mcpConfig = {
-    mcpServers: {
-      workshop: {
-        command: mcpCommand.command,
-        args: mcpCommand.args,
-        env: {
-          RAINDROP_WORKSHOP_URL: input.backendUrl,
-          RAINDROP_WORKSHOP_AGENT_PROVIDER: "claude",
-          RAINDROP_WORKSHOP_ANNOTATION_SOURCE: agentAnnotationSource("claude"),
-        },
-      },
-    },
-  };
+  const mcpConfig = buildMcpConfig(input.backendUrl, mcpCommand, input.queryApiKey, input.queryApiKeyToken);
+  const allowedMcpTools = Object.keys(mcpConfig.mcpServers)
+    .map((name) => `mcp__${name}__*`)
+    .join(",");
 
   // Deliberately do not pass --bare, --strict-mcp-config, or --tools.
   // Workshop wants the user's normal Claude Code environment:
@@ -79,7 +76,7 @@ export function buildClaudeArgs(input: ClaudeCliChatInput): string[] {
     "--permission-mode",
     process.env.RAINDROP_WORKSHOP_CLAUDE_PERMISSION_MODE ?? "bypassPermissions",
     "--allowedTools",
-    "mcp__workshop__*,mcp__raindrop__*",
+    allowedMcpTools,
     "--settings",
     JSON.stringify(askUserQuestionHookSettings(input.backendUrl)),
     "--append-system-prompt",
@@ -94,6 +91,47 @@ export function buildClaudeArgs(input: ClaudeCliChatInput): string[] {
 
   args.push(userPrompt(input));
   return args;
+}
+
+export function buildMcpConfig(
+  backendUrl: string,
+  mcpCommand = resolveWorkshopMcpCommand(),
+  queryApiKey?: string | null,
+  queryApiKeyToken?: string | null,
+): {
+  mcpServers: Record<string, Record<string, unknown>>;
+} {
+  const workshopEnv: Record<string, string> = {
+    RAINDROP_WORKSHOP_URL: backendUrl,
+    RAINDROP_WORKSHOP_AGENT_PROVIDER: "claude",
+    RAINDROP_WORKSHOP_ANNOTATION_SOURCE: agentAnnotationSource("claude"),
+  };
+  if (queryApiKeyToken?.trim()) {
+    workshopEnv.RAINDROP_WORKSHOP_QUERY_API_KEY_TOKEN = queryApiKeyToken.trim();
+  }
+  const mcpServers: Record<string, Record<string, unknown>> = {
+    raindrop_workshop: {
+      command: mcpCommand.command,
+      args: mcpCommand.args,
+      env: workshopEnv,
+    },
+  };
+
+  if (hasCloudMcpConfigured(queryApiKey, queryApiKeyToken)) {
+    // Point at the daemon's local proxy and authenticate with the transient
+    // per-spawn token. The agent process never has the real Raindrop Query
+    // API key in its environment; the daemon resolves the token to the key
+    // server-side before forwarding upstream.
+    mcpServers.raindrop_cloud = {
+      type: "http",
+      url: localCloudMcpProxyUrl(backendUrl),
+      headers: {
+        Authorization: `Bearer \${${QUERY_API_KEY_TOKEN_ENV}}`,
+      },
+    };
+  }
+
+  return { mcpServers };
 }
 
 function askUserQuestionHookSettings(backendUrl: string): Record<string, unknown> {
@@ -151,18 +189,13 @@ function shellArg(value: string): string {
 }
 
 function directReplySystemPrompt(input: ClaudeCliChatInput): string {
-  const runInstruction = input.runId
-    ? `The current Workshop trace is ${input.runId}. Use the Raindrop trace tools as needed when the user asks about "this trace" or the trace context matters; get_run_outline is usually the fastest first read, and get_span_payload is for exact raw payload evidence.`
-    : "No Workshop trace is currently selected.";
-
-  return [
-    "You are replying inside the Raindrop Workshop chat pane.",
-    "Your stdout is streamed directly into the Workshop UI.",
-    "Use normal assistant text as your final answer. Markdown is supported.",
-    "You may use Raindrop MCP tools to inspect traces, read span payloads, annotate findings, and show evidence in the UI.",
-    "You may also use the user's normal Claude Code tools, skills, memories, and MCP servers when they are relevant.",
-    runInstruction,
-  ].join(" ");
+  return workshopSidepanelPrompt({
+    provider: "claude",
+    localMcpName: "raindrop_workshop",
+    runId: input.runId,
+    queryApiKey: input.queryApiKey,
+    queryApiKeyToken: input.queryApiKeyToken,
+  });
 }
 
 function userPrompt(input: ClaudeCliChatInput): string {

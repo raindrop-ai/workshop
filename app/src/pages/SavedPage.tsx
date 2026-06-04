@@ -693,11 +693,10 @@ async function summarizeAndUpdate(event: SavedEvent): Promise<void> {
       event.signals?.length ? `Signals: ${event.signals.map(s => s.name).join(", ")}` : null,
     ].filter(Boolean).join("\n\n");
 
-    const apiKey = localStorage.getItem("rd_api_key") ?? undefined;
     const res = await fetch("/api/summarize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, apiKey }),
+      body: JSON.stringify({ content }),
     });
     if (!res.ok) return;
     const data = await res.json();
@@ -1008,8 +1007,6 @@ function SavedRunDetail({ event }: { event: SavedEvent }) {
 // Inline cloud trace viewer — same as RemoteRunDetail in SearchPage but standalone
 import type { Span, SubAgent } from "../utils/types";
 
-const API_BASE = "https://query.raindrop.ai";
-
 interface TraceSpan {
   trace_id: string; span_id: string; parent_span_id: string | null;
   span_name: string; span_type: string; status: string;
@@ -1021,12 +1018,10 @@ interface TraceSpan {
 }
 
 async function fetchCloudTraces(eventId: string): Promise<TraceSpan[]> {
-  const key = localStorage.getItem("rd_query_key");
-  if (!key) throw new Error("No Query API key.");
-  const url = new URL("/v1/traces", API_BASE);
+  const url = new URL("/api/query/traces", window.location.origin);
   url.searchParams.set("event_id", eventId);
   url.searchParams.set("limit", "500");
-  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${key}` } });
+  const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`API error ${res.status}`);
   const data = await res.json();
   return data.data;

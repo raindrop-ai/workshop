@@ -15,13 +15,13 @@ import {
 const TOOLS = [
   {
     name: "get_current_run",
-    description: "Return the single run (plus the currently selected span, when the UI has one) that Workshop is focused on right now — the run open in the UI when one is connected, otherwise the most-recently-updated run on the daemon. Workshop typically holds many runs; this is just the one in focus, not a list. Use this to resolve 'this trace' / 'the run on screen', then call query_traces to discover other runs or get_run_outline to drill into the returned run. Includes size hints so you can decide whether to query spans or read payloads.",
+    description: "Resolve the single run Workshop is focused on right now, plus the currently selected span when the UI has one. Takes no arguments. Use this when the user says 'this trace', 'the run on screen', 'the selected span', or otherwise refers to Workshop UI context without giving ids. Returns source, run, selected_span_id, selected_span, and size hints. Workshop may hold many runs; this is only the run that is currently in focus, not search or history.",
     inputSchema: { type: "object", properties: {} },
   },
   {
     name: "query_traces",
     description:
-      "Run a read-only SQLite SELECT over trace data. Use this as code-mode for discovery and aggregation before reading payload bytes. Main tables: runs(id,event_id,name,event_name,user_id,convo_id,started_at,last_updated_at,metadata), runs_with_hints(id,event_id,name,event_name,user_id,convo_id,started_at,last_updated_at,metadata,model,finished,span_count,live_event_count,payload_total_chars), spans(id,run_id,parent_span_id,name,span_type,status,input_payload,output_payload,start_time_ms,end_time_ms,duration_ms,model,provider,input_tokens,output_tokens,attributes), live_events(id,trace_id,span_id,type,content,timestamp,metadata), annotations(id,run_id,span_id,kind,note,source,created_at). For run discovery, prefer runs_with_hints over runs when you need span_count/live_event_count/payload_total_chars. Prefer selecting IDs, metadata, counts, lengths, and SUBSTR previews; use get_span_payload for full input/output payload slices.",
+      "Run one read-only SQLite SELECT over local Workshop trace data. CTEs are not allowed. Required: sql. Use for discovery, joins, counts, filtering, and lightweight previews before reading payload bytes. Main tables: runs(id,event_id,name,event_name,user_id,convo_id,started_at,last_updated_at,metadata), runs_with_hints(id,event_id,name,event_name,user_id,convo_id,started_at,last_updated_at,metadata,model,finished,span_count,live_event_count,payload_total_chars), spans(id,run_id,parent_span_id,name,span_type,status,input_payload,output_payload,start_time_ms,end_time_ms,duration_ms,model,provider,input_tokens,output_tokens,attributes), live_events(id,trace_id,span_id,type,content,timestamp,metadata), annotations(id,run_id,span_id,kind,note,source,created_at). Prefer runs_with_hints for run discovery. Select ids, metadata, counts, lengths, and SUBSTR previews; use get_span_payload for full span input/output content.",
     inputSchema: {
       type: "object",
       required: ["sql"],
@@ -34,15 +34,15 @@ const TOOLS = [
   },
   {
     name: "get_span_payload",
-    description: "Read the actual `input` or `output` contents of a span. Defaults to the first `max_chars` (8000) with `next_offset` for paging. Use `jsonpath` for JSON subtrees or `range: [start, end]` for UTF-16 char offsets.",
+    description: "Read the actual payload content for one span. Required: span_id and target, where target must be exactly 'input' or 'output'. Use after get_run_outline, search_run, query_traces, or get_current_run identifies a span whose raw prompt/tool/result payload is needed as evidence. Defaults to the first max_chars (8000) and returns next_offset when more is available. Use jsonpath for JSON subtrees or range: [start, end] for UTF-16 character offsets.",
     inputSchema: {
       type: "object",
       required: ["span_id", "target"],
       properties: {
-        span_id: { type: "string" },
-        target: { type: "string", enum: ["input", "output"] },
-        jsonpath: { type: "string" },
-        range: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2 },
+        span_id: { type: "string", description: "Span id returned by get_current_run, get_run_outline, search_run, get_span_context, or query_traces." },
+        target: { type: "string", enum: ["input", "output"], description: "Which payload to read. Must be 'input' or 'output'." },
+        jsonpath: { type: "string", description: "Optional JSONPath selecting a subtree before slicing." },
+        range: { type: "array", items: { type: "number" }, minItems: 2, maxItems: 2, description: "Optional UTF-16 character range [start, end]." },
         max_chars: { type: "number", description: "Default 8000, max 32000" },
         format: { type: "string", enum: ["json", "text"] },
       },
@@ -50,33 +50,33 @@ const TOOLS = [
   },
   {
     name: "annotate",
-    description: "Create a durable run or span annotation. Use `span_id` for evidence attached to a concrete span; omit it for a run-level verdict. Kind is 'issue', 'good', or 'note'.",
+    description: "Create a durable annotation saved in Workshop. Required: run_id and kind. kind must be 'issue', 'good', or 'note'. Include span_id when the note is about evidence on one concrete span; omit span_id for a run-level verdict or summary. note is the human-readable annotation text shown in the UI.",
     inputSchema: {
       type: "object",
       required: ["run_id", "kind"],
       properties: {
-        run_id: { type: "string" },
-        span_id: { type: "string" },
-        kind: { type: "string", enum: ["issue", "good", "note"] },
+        run_id: { type: "string", description: "Run id or unambiguous visible run id prefix." },
+        span_id: { type: "string", description: "Optional span id for span-level evidence." },
+        kind: { type: "string", enum: ["issue", "good", "note"], description: "Annotation category." },
         note: { type: "string", description: "Short explanation, typically one sentence." },
       },
     },
   },
   {
     name: "get_run_outline",
-    description: "Structural overview of a run: totals, span type counts, tool call counts with representative input/output previews, first/final LLM previews, flat span list with depth/name/type/status/tokens/previews, live-event histogram, detected sub-agents, error spans shortlist, and annotations. No full payload dumps. Use as the first read for a trace before deciding whether search_run, query_traces, or get_span_payload is needed.",
+    description: "Return a structural overview for one run. Required: run_id. Includes totals, span type counts, tool call counts with representative input/output previews, first/final LLM previews, a flat span list with depth/name/type/status/tokens/previews, live-event histogram, detected sub-agents, error spans shortlist, and annotations. It intentionally does not dump full payloads. Use when you need to understand a run's shape before deciding whether search_run, query_traces, get_span_context, or get_span_payload is needed.",
     inputSchema: {
       type: "object",
       required: ["run_id"],
       properties: {
-        run_id: { type: "string" },
+        run_id: { type: "string", description: "Run id or unambiguous visible run id prefix." },
         payload_preview_chars: { type: "number", description: "Preview chars per span. Default 80, max 400." },
       },
     },
   },
   {
     name: "ask_agent",
-    description: "Ask the captured agent context to explain or debug a Workshop trace. Use this when the user asks what went wrong and wants a continuation of the recorded agent conversation, not just trace inspection. Pass the run_id when available. Returns structured states for missing trace context, missing provider API key, provider error, or an answered response.",
+    description: "Ask the captured agent context to explain or debug a Workshop trace. This is different from you inspecting spans: it continues from the recorded agent conversation when Workshop can reconstruct that context. Use when the user explicitly wants the captured agent's perspective or a continuation of the recorded conversation. Pass run_id when available; otherwise it defaults to the active Workshop run. Returns structured states for missing trace context, missing provider API key, provider error, or an answered response.",
     inputSchema: {
       type: "object",
       required: ["question"],
@@ -88,7 +88,7 @@ const TOOLS = [
   },
   {
     name: "replay_run",
-    description: "Replay a Workshop run against the registered local agent. This invokes the normal Workshop replay flow: it checks `/health`, scans replay ports, starts the stored command when needed, prefills context, sends `/replay`, and waits for completion.",
+    description: "Replay a Workshop run against the registered local agent. Required: run_id. This invokes the normal Workshop replay flow: checks /health, scans replay ports, starts the stored command when needed, prefills context from the source trace, sends /replay, and waits for completion. Use when the user asks to replay, rerun, or try a modified user message/model/system prompt locally.",
     inputSchema: {
       type: "object",
       required: ["run_id"],
@@ -103,7 +103,7 @@ const TOOLS = [
   },
   {
     name: "search_run",
-    description: "Regex or substring search across a run's span payloads, attributes, and live events. Returns matches with span_id, scope (span_input/span_output/span_attributes/live_event), char range, and a snippet with surrounding context. Use to answer 'did string X appear anywhere in this run' without pulling full payloads. Set regex:true for JS regex patterns.",
+    description: "Search one run's span payloads, span attributes, and live events with substring or regex matching. Required: run_id and pattern. Returns matches with span_id, scope (span_input/span_output/span_attributes/live_event), character range, and a snippet with surrounding context. Use to answer whether text, ids, errors, tool names, or phrases appeared anywhere in the run without pulling full payloads. Set regex:true only for JavaScript regex patterns.",
     inputSchema: {
       type: "object",
       required: ["run_id", "pattern"],
@@ -121,7 +121,7 @@ const TOOLS = [
   },
   {
     name: "get_span_context",
-    description: "Skeletons of the spans surrounding a given span: N siblings before and after by start time, plus optionally the parent. Each skeleton has id, parent_id, name, span_type, status, start_time_ms, duration_ms, tokens, model. Use after finding a span of interest to see what came immediately before or after without reloading the full outline.",
+    description: "Return lightweight skeletons around one span. Required: span_id. Includes nearby siblings before and after by start time, plus the parent by default. Each skeleton has id, parent_id, name, span_type, status, start_time_ms, duration_ms, tokens, and model. Use after finding a span of interest to see immediate local context without reloading the whole run outline or payloads.",
     inputSchema: {
       type: "object",
       required: ["span_id"],
@@ -134,8 +134,21 @@ const TOOLS = [
     },
   },
   {
+    name: "import_cloud_trace",
+    description:
+      "Import one known production Raindrop event trace into the local Workshop DB and focus the connected Workshop UI on it by default. Required: event_id. Use when the user asks to pull/show/import a prod/cloud trace, or chooses a concrete cloud issue/event/signal/user/trace to inspect, and you already have a real event_id verified by Raindrop Cloud MCP get_event/list_events/search_events in the current turn. Do not use ids copied from assistant_output text, XML citation tags, markdown, or prior AI narrative unless Cloud MCP verifies them first. This is not a search tool: it downloads the trace with Workshop's configured Query API key, stores it locally, and returns a local run_id for get_run_outline/search_run/get_span_payload. If the result indicates the UI was not connected or the user still cannot see the run, call show_in_ui with the returned run_id.",
+    inputSchema: {
+      type: "object",
+      required: ["event_id"],
+      properties: {
+        event_id: { type: "string", description: "Production Raindrop event id returned by Raindrop Cloud MCP." },
+        open_in_ui: { type: "boolean", description: "Defaults to true. Set false to import without navigating the connected Workshop UI to the imported run." },
+      },
+    },
+  },
+  {
     name: "show_in_ui",
-    description: "Open context in the Workshop UI when a browser is connected. Can navigate to a run, open a coarse filter, and optionally draft a note. Returns a clear status if no UI is connected.",
+    description: "Ask the connected Workshop browser UI to show a run, span, or filter. Use proactively when showing the evidence will help the user follow along, especially after importing a cloud trace, finding a relevant run, or identifying a span worth inspecting. Can navigate to a run, open a coarse filter by event_name or user_id, and optionally draft an annotation note for a run/span. This is a UI navigation/drafting helper, not trace inspection. Returns a clear status if no UI is connected.",
     inputSchema: {
       type: "object",
       properties: {
@@ -188,6 +201,13 @@ function currentAnnotationSource(): AgentAnnotationSource {
   const explicit = process.env.RAINDROP_WORKSHOP_ANNOTATION_SOURCE;
   if (explicit === "claude-code" || explicit === "codex") return explicit;
   return agentAnnotationSource(parseAgentProvider(process.env.RAINDROP_WORKSHOP_AGENT_PROVIDER) ?? getAgentProvider());
+}
+
+function transientQueryApiAuth(): { query_api_key?: string; query_api_key_token?: string } {
+  const queryApiKey = process.env.RAINDROP_QUERY_API_KEY?.trim();
+  if (queryApiKey) return { query_api_key: queryApiKey };
+  const queryApiKeyToken = process.env.RAINDROP_WORKSHOP_QUERY_API_KEY_TOKEN?.trim();
+  return queryApiKeyToken ? { query_api_key_token: queryApiKeyToken } : {};
 }
 
 function runForMcp(value: unknown): unknown {
@@ -441,6 +461,34 @@ export function registerTraceReadTools(
         if (args.include_parent === false) params.set("include_parent", "false");
         const qs = params.toString();
         return textResult(await callBackend(backendUrl, `/api/spans/${encodeURIComponent(args.span_id)}/context${qs ? "?" + qs : ""}`));
+      }
+      case "import_cloud_trace": {
+        if (typeof args.event_id !== "string" || !args.event_id.trim()) {
+          throw new McpError(ErrorCode.InvalidParams, "event_id required");
+        }
+        let res: Response;
+        try {
+          res = await fetch(`${backendUrl}/api/cloud/traces/import`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              event_id: args.event_id,
+              open_in_ui: args.open_in_ui !== false,
+              ...transientQueryApiAuth(),
+            }),
+          });
+        } catch (err) {
+          throw backendUnreachableError(backendUrl, err);
+        }
+        if (res.status === 400 || res.status === 404 || res.status === 413) {
+          const body = await res.json().catch(() => ({}));
+          throw new McpError(ErrorCode.InvalidParams, body?.error ?? "Could not import cloud trace");
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new McpError(ErrorCode.InternalError, body?.error ?? `Workshop backend returned ${res.status} importing cloud trace`);
+        }
+        return textResult(await res.json());
       }
       case "show_in_ui": {
         try {

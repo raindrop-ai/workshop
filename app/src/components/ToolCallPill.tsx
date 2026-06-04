@@ -3,7 +3,6 @@ import { Chevron, Check, Spinner, AlertCircle } from "./Icons";
 import { C, spanColor } from "../utils/colors";
 import { argsPreview, fmt, trunc, tryJson } from "../utils/helpers";
 import { getNormalizedTool, type Span } from "../utils/types";
-import { JsonView } from "./JsonView";
 
 function approxTokens(s: string | null | undefined): string | null {
   if (!s || s.length < 20) return null;
@@ -96,17 +95,13 @@ export function ToolCallPill({ span, colorMap }: { span: Span; colorMap: Map<str
             {span.input_payload && (
               <div className="flex-1 min-w-0 p-2.5 overflow-auto sb" style={{ borderRight: span.output_payload ? `1px solid ${C.border}` : "none" }}>
                 <div className="text-[9px] uppercase tracking-wide mb-1 font-sans font-medium" style={{ color: C.fg0 }}>Input</div>
-                <div className="select-text">
-                  <JsonView data={span.input_payload} maxExpand={2} />
-                </div>
+                <pre className="text-[11px] font-mono leading-relaxed select-all whitespace-pre-wrap break-words" style={{ color: C.fg2 }}>{tryJson(span.input_payload)}</pre>
               </div>
             )}
             {span.output_payload && (
               <div className="flex-1 min-w-0 p-2.5 overflow-auto sb">
                 <div className="text-[9px] uppercase tracking-wide mb-1 font-sans font-medium" style={{ color: C.fg0 }}>Output</div>
-                <div className="select-text">
-                  <JsonView data={span.output_payload} maxExpand={2} colorOverride={err ? C.red : undefined} />
-                </div>
+                <pre className="text-[11px] font-mono leading-relaxed select-all whitespace-pre-wrap break-words" style={{ color: err ? C.red : C.fg2 }}>{tryJson(span.output_payload)}</pre>
               </div>
             )}
           </div>

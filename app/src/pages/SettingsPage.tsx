@@ -4,6 +4,15 @@ import { C } from "../utils/colors";
 import { LocalAgentSetupCTA } from "../components/LocalAgentSetupCTA";
 import { SecretInput } from "../components/SecretInput";
 import { useWorkshopEvent } from "../hooks/use-workshop-ws";
+import {
+  deleteSecret,
+  getSecretStatuses,
+  purgeLegacyBrowserSecrets,
+  saveSecret,
+  type SecretKey,
+  type SecretStatus,
+  type SecretStatuses,
+} from "../api/secrets";
 
 type Tab = "agents" | "keys" | "debug";
 
@@ -207,25 +216,121 @@ function AgentEndpointsSection() {
 }
 
 function KeysSection() {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("rd_api_key") ?? "");
-  const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem("rd_openai_key") ?? "");
-  const [raindropKey, setRaindropKey] = useState(() => localStorage.getItem("rd_raindrop_key") ?? "");
-  const [queryKey, setQueryKey] = useState(() => localStorage.getItem("rd_query_key") ?? "");
+  const [drafts, setDrafts] = useState<Record<SecretKey, string>>({
+    anthropic: "",
+    openai: "",
+    raindrop: "",
+    query: "",
+  });
+  const [statuses, setStatuses] = useState<SecretStatuses | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savingKey, setSavingKey] = useState<SecretKey | null>(null);
 
-  const persist = useCallback((key: string, val: string, setter: (v: string) => void) => {
-    setter(val);
-    if (val.trim()) localStorage.setItem(key, val.trim());
-    else localStorage.removeItem(key);
-    window.dispatchEvent(new CustomEvent("workshop:api-key-change", { detail: { key } }));
+  useEffect(() => {
+    let cancelled = false;
+    purgeLegacyBrowserSecrets();
+    getSecretStatuses()
+      .then((next) => { if (!cancelled) setStatuses(next); })
+      .catch(() => {
+        if (!cancelled) setStatuses(null);
+      });
+    return () => { cancelled = true; };
   }, []);
 
+  const setDraft = useCallback((key: SecretKey, value: string) => {
+    setDrafts((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const persist = useCallback(async (key: SecretKey, rawValue: string) => {
+    const value = rawValue.trim();
+    if (!value) return;
+
+    setSaveError(null);
+    setSavingKey(key);
+    try {
+      const nextStatus = await saveSecret(key, value);
+      setStatuses((current) => current ? { ...current, [key]: nextStatus } : current);
+      setDrafts((current) => ({ ...current, [key]: "" }));
+      purgeLegacyBrowserSecrets();
+      window.dispatchEvent(new CustomEvent("workshop:api-key-change", { detail: { secret: key } }));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingKey(null);
+    }
+  }, []);
+
+  const clearSecret = useCallback(async (key: SecretKey) => {
+    setSaveError(null);
+    setSavingKey(key);
+    try {
+      const nextStatus = await deleteSecret(key);
+      setStatuses((current) => current ? { ...current, [key]: nextStatus } : current);
+      setDrafts((current) => ({ ...current, [key]: "" }));
+      purgeLegacyBrowserSecrets();
+      window.dispatchEvent(new CustomEvent("workshop:api-key-change", { detail: { secret: key } }));
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingKey(null);
+    }
+  }, []);
+
+  const secretSaved = useCallback((key: SecretKey) => {
+    return statuses?.[key]?.configured === true;
+  }, [statuses]);
+
+  const sourceText = useCallback((key: SecretKey, fallback: string) => {
+    const status = statuses?.[key];
+    if (!status?.configured) return fallback;
+    return status.source === "env" ? "Configured from environment." : undefined;
+  }, [statuses]);
+
+  const canClearSecret = useCallback((key: SecretKey) => {
+    return statuses?.[key]?.source === "store";
+  }, [statuses]);
+
+  useWorkshopEvent("secrets_updated", (data: { key?: SecretKey; status?: SecretStatus }) => {
+    if (!data?.key || !data.status) return;
+    setStatuses((current) => current ? { ...current, [data.key as SecretKey]: data.status as SecretStatus } : current);
+  });
+
   return (
-    <SectionBlock id="keys" title="API Keys" description="Stored in your browser's local storage. Never sent to Raindrop servers.">
-      <SecretInput label="Anthropic" placeholder="sk-ant-..." description="Used for replay and Ask chat." value={apiKey} saved={!!apiKey} onChange={v => persist("rd_api_key", v, setApiKey)} getKeyUrl="https://console.anthropic.com/settings/keys" />
-      <SecretInput label="OpenAI" placeholder="sk-..." description="Used for replay with GPT models." value={openaiKey} saved={!!openaiKey} onChange={v => persist("rd_openai_key", v, setOpenaiKey)} getKeyUrl="https://platform.openai.com/api-keys" />
-      <SecretInput label="Raindrop" placeholder="rk_..." description="Write key for trace shipping." value={raindropKey} saved={!!raindropKey} onChange={v => persist("rd_raindrop_key", v, setRaindropKey)} getKeyUrl="https://app.raindrop.ai" />
-      <SecretInput label="Query API" placeholder="your-query-api-key" description="Key for searching events in the Search tab." value={queryKey} saved={!!queryKey} onChange={v => persist("rd_query_key", v, setQueryKey)} getKeyUrl="https://auth.raindrop.ai/org/api_keys" />
+    <SectionBlock id="keys" title="API Keys" description="Keys are sent once to the local daemon and are never read back into the browser. Paste a new key to replace a saved one.">
+      <SecretInput label="Anthropic" placeholder="sk-ant-..." description={sourceText("anthropic", "Used for replay and Ask chat.")} value={drafts.anthropic} saved={secretSaved("anthropic")} saving={savingKey === "anthropic"} onChange={v => setDraft("anthropic", v)} onSave={v => persist("anthropic", v)} onClear={canClearSecret("anthropic") ? () => clearSecret("anthropic") : undefined} getKeyUrl="https://console.anthropic.com/settings/keys" />
+      <SecretInput label="OpenAI" placeholder="sk-..." description={sourceText("openai", "Used for replay with GPT models.")} value={drafts.openai} saved={secretSaved("openai")} saving={savingKey === "openai"} onChange={v => setDraft("openai", v)} onSave={v => persist("openai", v)} onClear={canClearSecret("openai") ? () => clearSecret("openai") : undefined} getKeyUrl="https://platform.openai.com/api-keys" />
+      <SecretInput label="Raindrop" placeholder="rk_..." description={sourceText("raindrop", "Write key for trace shipping.")} value={drafts.raindrop} saved={secretSaved("raindrop")} saving={savingKey === "raindrop"} onChange={v => setDraft("raindrop", v)} onSave={v => persist("raindrop", v)} onClear={canClearSecret("raindrop") ? () => clearSecret("raindrop") : undefined} getKeyUrl="https://app.raindrop.ai" />
+      <SecretInput label="Query API" placeholder="your-query-api-key" description={sourceText("query", "Key for searching events in the Search tab.")} value={drafts.query} saved={secretSaved("query")} saving={savingKey === "query"} onChange={v => setDraft("query", v)} onSave={v => persist("query", v)} onClear={canClearSecret("query") ? () => clearSecret("query") : undefined} getKeyUrl="https://auth.raindrop.ai/org/api_keys" />
+      {saveError && <div className="text-[11px]" style={{ color: C.red }}>{saveError}</div>}
+      <DaemonQueryKeyStatus status={statuses?.query ?? null} />
     </SectionBlock>
+  );
+}
+
+function DaemonQueryKeyStatus({
+  status,
+}: {
+  status: SecretStatus | null;
+}) {
+  const configured = status?.configured === true;
+  return (
+    <div
+      className="flex items-center justify-between gap-3 rounded-md px-2.5 py-2"
+      style={{ background: "rgba(255,255,255,0.035)", border: `1px solid ${C.border}` }}
+    >
+      <div className="min-w-0">
+        <div className="text-[11px]" style={{ color: C.fg3 }}>Raindrop Cloud MCP</div>
+      </div>
+      <span
+        className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]"
+        style={{
+          color: status === null ? C.fg1 : configured ? C.green : C.fg0,
+          background: configured ? "rgba(96,227,109,0.08)" : "rgba(255,255,255,0.04)",
+        }}
+      >
+        {status === null ? "checking" : configured ? "enabled" : "not connected"}
+      </span>
+    </div>
   );
 }
 

@@ -5,8 +5,6 @@ import {
 } from "./saved-runs";
 import type { Run, Span, SubAgent } from "../utils/types";
 
-const API_BASE = "https://query.raindrop.ai";
-
 const signalSchema = z.object({
   id: z.string(),
   type: z.string(),
@@ -59,23 +57,14 @@ export type QueryEvent = z.infer<typeof queryEventSchema>;
 export type TraceSpan = z.infer<typeof traceSpanSchema>;
 export type SearchMode = "text" | "semantic" | "regex";
 
-function getQueryKey(): string | null {
-  return localStorage.getItem("rd_query_key");
-}
-
-export function hasQueryApiKey(): boolean {
-  return !!getQueryKey();
-}
-
 async function queryApiFetch<T>(path: string, params: Record<string, string>, schema: z.ZodType<T>): Promise<T> {
-  const key = getQueryKey();
-  if (!key) throw new Error("No Query API key configured. Add one in Settings.");
-  const url = new URL(path, API_BASE);
+  const proxyPath = path.replace(/^\/v1/, "/api/query");
+  const url = new URL(proxyPath, window.location.origin);
   Object.entries(params).forEach(([k, v]) => { if (v) url.searchParams.set(k, v); });
-  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${key}` } });
+  const res = await fetch(url.toString());
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `API error ${res.status}`);
+    throw new Error(body?.error?.message ?? body?.error ?? `API error ${res.status}`);
   }
   const json = await res.json();
   return schema.parse(json);

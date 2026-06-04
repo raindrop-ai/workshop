@@ -111,7 +111,7 @@ function setupAgents(scope: InstallScope, cwd: string): InstallAgentId[] {
 function summarizeInstall(): string {
   return [
     "Next steps:",
-    "  Run /instrument-agent inside your AI coding agent.",
+    "  Run /instrument-agent inside your AI coding agent (local Workshop debugger).",
     "",
   ].join("\n");
 }

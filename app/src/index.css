@@ -32,6 +32,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+input.secret-input-saved:focus::placeholder {
+  color: transparent !important;
+  opacity: 0 !important;
+}
+
 @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:.3} }
 @keyframes spin { to{transform:rotate(360deg)} }
 @keyframes bounce-dot { 0%,80%,100%{transform:scale(0)} 40%{transform:scale(1)} }
@@ -63,6 +68,21 @@ body {
 @keyframes thinking-sheen {
   from { background-position: 120% 0; }
   to { background-position: -120% 0; }
+}
+@keyframes cloud-nudge-poof {
+  0% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  100% { opacity: 0; transform: translateY(6px) scale(0.96); filter: blur(1px); }
+}
+@keyframes cloud-nudge-dot-poof {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--poof-angle)) translateX(0) scale(0.8);
+  }
+  20% { opacity: 0.95; }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--poof-angle)) translateX(var(--poof-distance)) scale(0.2);
+  }
 }
 
 .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
@@ -96,6 +116,20 @@ body {
   animation:
     stream-block-arrive 160ms ease-out both,
     thinking-sheen 1.7s ease-in-out infinite;
+}
+.cloud-mcp-nudge {
+  transform-origin: 50% 100%;
+}
+.cloud-mcp-nudge-dismissing {
+  animation: cloud-nudge-poof 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.cloud-mcp-nudge-poof-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: rgba(225,232,236,0.9);
+  box-shadow: 0 0 10px rgba(255,255,255,0.26);
+  animation: cloud-nudge-dot-poof 260ms ease-out both;
 }
 .tool-block {
   transition: border-color 160ms ease, background 160ms ease;
@@ -204,7 +238,9 @@ body {
   .thinking-block-live,
   .tool-block-running,
   .tool-live-dot,
-  .stream-caret {
+  .stream-caret,
+  .cloud-mcp-nudge-dismissing,
+  .cloud-mcp-nudge-poof-dot {
     animation: none;
   }
   .annotation-arriving {

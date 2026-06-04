@@ -28,7 +28,15 @@ function cwdLabel(cwd: string | null): string {
   return base || trimmed;
 }
 
-export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?: string | null; provider?: AgentProviderId } = {}) {
+export function ConnectionIndicator({
+  cwd = null,
+  provider = "claude",
+  onChooseFolder,
+}: {
+  cwd?: string | null;
+  provider?: AgentProviderId;
+  onChooseFolder?: () => void;
+} = {}) {
   const [status, setStatus] = useState<Status>({ state: "gray" });
   const [showRemediation, setShowRemediation] = useState(false);
   const [firstTimeOpen, setFirstTimeOpen] = useState(false);
@@ -115,6 +123,19 @@ export function ConnectionIndicator({ cwd = null, provider = "claude" }: { cwd?:
       )}
       {showWorkspaceMenu && status.state === "green" && (
         <div className="absolute left-0 top-full z-50 mt-2 w-80 rounded-lg border border-white/10 bg-zinc-900/95 p-1 text-xs shadow-2xl backdrop-blur">
+          {onChooseFolder && (
+            <button
+              type="button"
+              className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-white/75 transition-colors hover:bg-white/5 hover:text-white"
+              onClick={() => {
+                setShowWorkspaceMenu(false);
+                onChooseFolder();
+              }}
+            >
+              <Folder className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Choose folder...</span>
+            </button>
+          )}
           {workspaceError && (
             <div className="px-2 py-1.5 text-red-100/80">{workspaceError}</div>
           )}

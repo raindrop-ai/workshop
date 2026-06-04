@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Copy, ExternalLink, Folder as FolderIcon, KeyRound, Plus, Send, Terminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, Cloud, Copy, ExternalLink, Folder as FolderIcon, Home, KeyRound, Loader2, Plus, Send, Terminal, Wrench, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import claudeCodeLogo from "../assets/claude-code-logo.png";
 import codexLogo from "../assets/codex-logo.svg";
@@ -94,9 +94,23 @@ interface SlashItem {
   description?: string;
 }
 
+interface DirectoryEntry {
+  name: string;
+  path: string;
+}
+
+interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  home: string;
+  entries: DirectoryEntry[];
+}
+
 const COLLAPSED_KEY = "workshop:messagePane:collapsed";
 const WIDTH_KEY = "workshop:messagePane:width";
 const PROVIDER_INTRO_SEEN_KEY = "workshop:messagePane:providerIntroSeen";
+const CLOUD_MCP_NUDGE_CHAT_COUNT_KEY = "workshop:messagePane:cloudMcpNudgeChatCount";
+const CLOUD_MCP_NUDGE_CHANCE = 0.05;
 const MIN_WIDTH = 360;
 const MAX_WIDTH = 760;
 const DEFAULT_WIDTH = 460;
@@ -139,6 +153,32 @@ function loadProviderIntroSeen(): boolean {
 function saveProviderIntroSeen(): void {
   try { localStorage.setItem(PROVIDER_INTRO_SEEN_KEY, "1"); } catch {}
 }
+function loadCloudMcpNudgeChatCount(): number {
+  try {
+    const stored = localStorage.getItem(CLOUD_MCP_NUDGE_CHAT_COUNT_KEY);
+    return Math.max(0, Number.parseInt(stored ?? "0", 10) || 0);
+  } catch {
+    return 0;
+  }
+}
+/**
+ * Increment the persistent chat counter and decide whether this chat
+ * should display the cloud MCP nudge. Side-effectful by design — the
+ * persisted counter is what lets the nudge appear on the second chat and
+ * then trickle in on later chats. Named with `claim` rather than `should`
+ * so callers don't mistake it for a pure predicate.
+ */
+function claimNextCloudMcpNudgeChatSlot(): boolean {
+  try {
+    const chatCount = loadCloudMcpNudgeChatCount() + 1;
+    localStorage.setItem(CLOUD_MCP_NUDGE_CHAT_COUNT_KEY, String(chatCount));
+    if (chatCount === 2) return true;
+    if (chatCount > 2) return Math.random() < CLOUD_MCP_NUDGE_CHANCE;
+    return false;
+  } catch {
+    return false;
+  }
+}
 
 interface MessagePaneProps {
   /** If set, messages sent from the pane will carry this run_id. */
@@ -164,6 +204,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const [terminalCommandCopied, setTerminalCommandCopied] = useState(false);
   const [terminalCommand, setTerminalCommand] = useState("");
   const [workspaceCwd, setWorkspaceCwd] = useState<string | null>(null);
+  const [conversationCwd, setConversationCwd] = useState<string | null>(null);
+  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false);
+  const [cloudMcpConfigured, setCloudMcpConfigured] = useState<boolean | null>(null);
+  const [cloudMcpNudgeVisible, setCloudMcpNudgeVisible] = useState(false);
   const [showSlash, setShowSlash] = useState(false);
   const [activeSlashIndex, setActiveSlashIndex] = useState(0);
   const [collapsePreview, setCollapsePreview] = useState(false);
@@ -179,6 +223,8 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const hiddenPendingQuestionIdsRef = useRef<Set<string>>(new Set());
   const hiddenPendingSessionIdsRef = useRef<Set<string>>(new Set());
   const suppressPendingUntilNextSendRef = useRef(false);
+  const daemonCloudMcpConfiguredRef = useRef(false);
+  const cloudMcpNudgeCountedForChatRef = useRef(false);
 
   function setCollapsed(v: boolean) {
     setCollapsePreview(false);
@@ -214,6 +260,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   function dismissProviderIntro() {
     setShowProviderIntro(false);
     saveProviderIntroSeen();
+  }
+
+  function dismissCloudMcpNudge() {
+    setCloudMcpNudgeVisible(false);
   }
 
   useEffect(() => () => {
@@ -279,13 +329,14 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   }, []);
 
   const refreshSessions = useCallback(async () => {
-    const res = await fetch("/api/agent/sessions");
+    const res = await fetch(apiPathWithCwd("/api/agent/sessions", conversationCwd ?? workspaceCwd));
     if (res.ok) setSessions(await res.json());
-  }, []);
+  }, [conversationCwd, workspaceCwd]);
 
-  const loadSession = useCallback(async (id: string) => {
+  const loadSession = useCallback(async (id: string, cwd?: string | null) => {
     setError(null);
-    const res = await fetch(`/api/agent/sessions/${encodeURIComponent(id)}`);
+    const targetCwd = cwd ?? conversationCwd ?? workspaceCwd;
+    const res = await fetch(apiPathWithCwd(`/api/agent/sessions/${encodeURIComponent(id)}`, targetCwd));
     if (!res.ok) {
       setError(`Could not load ${providerLabel(provider)} session.`);
       return;
@@ -295,10 +346,12 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     });
     hiddenPendingSessionIdsRef.current.delete(id);
     suppressPendingUntilNextSendRef.current = false;
+    const session = await res.json() as ClaudeSessionDetail;
     setSelectedId(id);
-    setDetail(await res.json());
+    setDetail(session);
+    setConversationCwd(session.cwd ?? targetCwd ?? null);
     setShowList(false);
-  }, [pendingQuestions, provider]);
+  }, [conversationCwd, pendingQuestions, provider, workspaceCwd]);
 
   useEffect(() => {
     void refreshSessions();
@@ -329,7 +382,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         if (!res.ok) return;
         const body = await res.json().catch(() => null);
         const cwd = typeof body?.cwd === "string" ? body.cwd : null;
-        if (!cancelled) setWorkspaceCwd(cwd);
+        if (!cancelled) {
+          setWorkspaceCwd(cwd);
+          setConversationCwd((current) => current ?? cwd);
+        }
       } catch {
         // Keep resume copy usable without a cwd if the workspace endpoint is unavailable.
       }
@@ -340,13 +396,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/agent/loadout");
+      const res = await fetch(apiPathWithCwd("/api/agent/loadout", conversationCwd ?? workspaceCwd));
       if (!res.ok) return;
       const body = await res.json();
       if (!cancelled) setLoadout(body);
     })();
     return () => { cancelled = true; };
-  }, [provider]);
+  }, [conversationCwd, provider, workspaceCwd]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -360,6 +416,42 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   useEffect(() => {
     setActiveSlashIndex(0);
   }, [draft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshCloudMcpStatus = async () => {
+      const res = await fetch("/api/status");
+      if (!res.ok) return;
+      const body = await res.json().catch(() => null);
+      if (!cancelled) {
+        daemonCloudMcpConfiguredRef.current = body?.cloud_mcp?.configured === true;
+        setCloudMcpConfigured(daemonCloudMcpConfiguredRef.current);
+      }
+    };
+    refreshCloudMcpStatus();
+    const onKeyChange = () => refreshCloudMcpStatus();
+    window.addEventListener("workshop:api-key-change", onKeyChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("workshop:api-key-change", onKeyChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const eligibleForCloudMcpNudge = cloudMcpConfigured === false && (detail?.messages.length ?? 0) === 0 && !sending;
+    if (!eligibleForCloudMcpNudge) {
+      cloudMcpNudgeCountedForChatRef.current = false;
+      // React skips the render when the value is unchanged, so dropping the
+      // guard here is fine — and lets us drop cloudMcpNudgeVisible from the
+      // deps below, which would otherwise re-run this effect each time we
+      // toggle the nudge.
+      setCloudMcpNudgeVisible(false);
+      return;
+    }
+    if (cloudMcpNudgeCountedForChatRef.current) return;
+    cloudMcpNudgeCountedForChatRef.current = true;
+    if (claimNextCloudMcpNudgeChatSlot()) setCloudMcpNudgeVisible(true);
+  }, [cloudMcpConfigured, detail?.messages.length, sending]);
 
   useEffect(() => {
     let cancelled = false;
@@ -382,7 +474,9 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   });
 
   useWorkshopEvent("workspace_changed", (workspace: { cwd?: string | null }) => {
-    setWorkspaceCwd(typeof workspace?.cwd === "string" ? workspace.cwd : null);
+    const cwd = typeof workspace?.cwd === "string" ? workspace.cwd : null;
+    setWorkspaceCwd(cwd);
+    setConversationCwd(cwd);
     startNewChat();
     setShowList(true);
     void refreshSessions();
@@ -439,6 +533,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       return;
     }
     if (typeof commandResult === "string") content = commandResult;
+    dismissCloudMcpNudge();
     suppressPendingUntilNextSendRef.current = false;
     const clientMessageId = `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     activeClientMessageIdRef.current = clientMessageId;
@@ -447,6 +542,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     setSending(true);
     setError(null);
     try {
+      const messageCwd = detail?.cwd ?? conversationCwd ?? workspaceCwd;
       const optimistic: ClaudeChatMessage = {
         id: `pending-${Date.now()}`,
         role: "user",
@@ -462,19 +558,22 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           message_count: 1,
           last_prompt: content,
           preview: content,
+          cwd: messageCwd ?? undefined,
           messages: [optimistic],
         });
       setShowList(false);
       setDraft("");
       setShowSlash(false);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
       const res = await fetch("/api/agent/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           content,
           session_id: selectedId,
           run_id: activeRunId ?? null,
           client_message_id: clientMessageId,
+          cwd: messageCwd,
         }),
       });
       const body = await res.json().catch(() => null);
@@ -483,6 +582,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
       if (body?.session_id) setSelectedId(body.session_id);
       if (body?.session) {
         setDetail(appendLiveCompletionIfMissing(body.session, liveBlocksRef.current));
+        if (typeof body.session.cwd === "string") setConversationCwd(body.session.cwd);
       } else if (typeof body?.text === "string") {
         const capturedBlocks = liveBlocksRef.current.length
           ? liveBlocksRef.current
@@ -520,6 +620,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
     setShowSlash(false);
     setError(null);
     setShowList(false);
+    setCloudMcpNudgeVisible(false);
   }
 
   async function switchProvider(next: AgentProviderId) {
@@ -612,8 +713,10 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
   const showTraceDebugPrompt = !!activeRunId && messages.length === 0 && !sending && visibleLiveBlocks.length === 0;
   const slashItems = useMemo(() => buildSlashItems(loadout, draft, provider), [loadout, draft, provider]);
   const activeSlashItem = showSlash ? slashItems[activeSlashIndex] : undefined;
-  const currentCwd = detail?.cwd ?? workspaceCwd;
+  const currentCwd = detail?.cwd ?? conversationCwd ?? workspaceCwd;
   const currentCwdDisplay = formatCwdDisplay(currentCwd);
+  const canChangeConversationCwd = !selectedId && messages.length === 0 && !sending;
+  const showCloudMcpNudge = cloudMcpConfigured === false && cloudMcpNudgeVisible && messages.length === 0 && !sending;
 
   useEffect(() => {
     setActiveSlashIndex((index) => Math.min(index, Math.max(0, slashItems.length - 1)));
@@ -694,7 +797,11 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
                 busy={switchingProvider}
                 onProviderChange={selectProvider}
               />
-              <ConnectionIndicator cwd={currentCwd} provider={provider} />
+              <ConnectionIndicator
+                cwd={currentCwd}
+                provider={provider}
+                onChooseFolder={() => setShowDirectoryPicker(true)}
+              />
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <button
@@ -723,7 +830,16 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
                 </div>
                 <div className="mt-1 flex min-w-0 items-center gap-1.5 font-mono text-[10px] text-white/35">
                   <FolderIcon className="h-3 w-3 shrink-0" />
-                  <span className="min-w-0 break-all leading-snug" title={currentCwd ?? undefined}>{currentCwdDisplay}</span>
+                  <span className="min-w-0 flex-1 truncate leading-snug" title={currentCwd ?? undefined}>{currentCwdDisplay}</span>
+                  {canChangeConversationCwd ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowDirectoryPicker(true)}
+                      className="shrink-0 rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-white/45 transition-colors hover:bg-white/5 hover:text-white/75"
+                    >
+                      Change
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <div className="-mr-1 -mt-[22px] flex shrink-0 items-center gap-1">
@@ -776,13 +892,13 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
         <ChatList
           sessions={sessions}
           selectedId={selectedId}
-          workspaceCwd={workspaceCwd}
+          workspaceCwd={conversationCwd ?? workspaceCwd}
           provider={provider}
           providerError={error}
           providerBusy={switchingProvider}
           showProviderIntro={showProviderIntro}
           onProviderIntroChoice={chooseIntroProvider}
-          onSelect={(id) => void loadSession(id)}
+          onSelect={(id, cwd) => void loadSession(id, cwd)}
           onNew={startNewChat}
         />
       ) : (
@@ -807,6 +923,7 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
 
           <footer className="absolute inset-x-0 bottom-0 z-20 px-2 pb-[10px] pt-3">
             {showTraceDebugPrompt && <TraceDebugPrompt onPrompt={(prompt) => void sendMessage(prompt)} />}
+            {showCloudMcpNudge && <CloudMcpNudge onDismiss={dismissCloudMcpNudge} />}
             {showSlash && slashItems.length > 0 && (
               <div id="claude-slash-menu" className="absolute bottom-full left-2 right-2 mb-2 max-h-64 overflow-y-auto rounded-lg border border-white/10 bg-zinc-900/95 p-1 text-xs shadow-2xl">
                 {slashItems.map((item, index) => (
@@ -891,6 +1008,18 @@ export function MessagePane({ activeRunId }: MessagePaneProps) {
           Hide
         </button>
       )}
+      {showDirectoryPicker && (
+        <DirectoryPicker
+          currentCwd={conversationCwd ?? workspaceCwd}
+          onClose={() => setShowDirectoryPicker(false)}
+          onSelect={(cwd) => {
+            setConversationCwd(cwd);
+            startNewChat();
+            setShowDirectoryPicker(false);
+            setSessions([]);
+          }}
+        />
+      )}
     </aside>
   );
 }
@@ -913,6 +1042,224 @@ function FloatingAskButton({ provider, onOpen }: { provider: AgentProviderId; on
         <Terminal className="h-4 w-4 text-zinc-950" />
         <span>Ask Claude Code</span>
       </button>
+    </div>
+  );
+}
+
+function DirectoryPicker({
+  currentCwd,
+  onSelect,
+  onClose,
+}: {
+  currentCwd: string | null;
+  onSelect: (cwd: string) => void;
+  onClose: () => void;
+}) {
+  const [listing, setListing] = useState<DirectoryListing | null>(null);
+  const [pathInput, setPathInput] = useState(currentCwd ?? "~");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadDirectory = useCallback(async (targetPath: string) => {
+    const nextPath = targetPath.trim() || "~";
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/directories?path=${encodeURIComponent(nextPath)}`);
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? "Could not load directory.");
+      setListing(body as DirectoryListing);
+      setPathInput(typeof body?.path === "string" ? body.path : nextPath);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDirectory(currentCwd ?? "~");
+  }, [currentCwd, loadDirectory]);
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-[440px] rounded-xl border border-white/10 bg-zinc-950/95 p-3 shadow-2xl">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-medium text-white/85">Choose working directory</div>
+            <div className="mt-0.5 text-[11px] text-white/40">Browse to a folder or type a path. Select confirms your choice.</div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-7 w-7 place-items-center rounded-md text-white/45 transition-colors hover:bg-white/5 hover:text-white"
+            aria-label="Close directory picker"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <form
+          className="flex items-center gap-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void loadDirectory(pathInput);
+          }}
+        >
+          <input
+            value={pathInput}
+            onChange={(event) => setPathInput(event.target.value)}
+            className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/25 px-2 py-1.5 font-mono text-xs text-white/80 placeholder:text-white/30 focus:border-white/25 focus:outline-none"
+            placeholder="~/Projects/my-agent"
+          />
+          <button
+            type="submit"
+            className="rounded-md border border-white/10 bg-white/[0.06] px-2.5 py-1.5 text-xs text-white/65 transition-colors hover:bg-white/[0.1] hover:text-white"
+          >
+            Go to path
+          </button>
+        </form>
+
+        <div className="mt-2 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => listing?.home && void loadDirectory(listing.home)}
+            className="flex min-h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[11px] text-white/50 transition-colors hover:bg-white/5 hover:text-white/75"
+          >
+            <Home className="h-3 w-3" />
+            Home
+          </button>
+          <button
+            type="button"
+            disabled={!listing?.parent}
+            onClick={() => listing?.parent && void loadDirectory(listing.parent)}
+            className="flex min-h-7 items-center gap-1 rounded-md border border-white/10 px-2 text-[11px] text-white/50 transition-colors hover:bg-white/5 hover:text-white/75 disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            <ChevronLeft className="h-3 w-3" />
+            Up
+          </button>
+        </div>
+
+        <div className="mt-3 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-black/20 p-1">
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-8 text-xs text-white/45">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading directories...
+            </div>
+          )}
+          {!loading && error && (
+            <div className="px-2 py-2 text-xs text-red-100/80">{error}</div>
+          )}
+          {!loading && !error && listing?.entries.length === 0 && (
+            <div className="px-2 py-8 text-center text-xs text-white/35">No child directories.</div>
+          )}
+          {!loading && !error && listing?.entries.map((entry) => (
+            <button
+              key={entry.path}
+              type="button"
+              onClick={() => void loadDirectory(entry.path)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-white/65 transition-colors hover:bg-white/5 hover:text-white"
+            >
+              <FolderIcon className="h-3.5 w-3.5 shrink-0 text-white/35" />
+              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border border-white/10 px-2.5 py-1.5 text-xs text-white/50 transition-colors hover:bg-white/5 hover:text-white/75"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!listing}
+              onClick={() => listing && onSelect(listing.path)}
+              className="rounded-md border border-white/15 bg-white/[0.08] px-2.5 py-1.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/[0.13] hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Select
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const CLOUD_NUDGE_POOF_MS = 280;
+
+function CloudMcpNudge({ onDismiss }: { onDismiss: () => void }) {
+  const [dismissing, setDismissing] = useState(false);
+  const dismissTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (dismissTimerRef.current) window.clearTimeout(dismissTimerRef.current);
+  }, []);
+
+  function dismissWithPoof() {
+    if (dismissing) return;
+    const prefersReducedMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion) {
+      onDismiss();
+      return;
+    }
+    setDismissing(true);
+    dismissTimerRef.current = window.setTimeout(() => {
+      dismissTimerRef.current = null;
+      onDismiss();
+    }, CLOUD_NUDGE_POOF_MS);
+  }
+
+  return (
+    <div
+      className={`cloud-mcp-nudge ${dismissing ? "cloud-mcp-nudge-dismissing" : ""} relative mb-2 overflow-hidden rounded-[12px] border border-white/10 bg-[#101010]/90 px-3 py-2 text-xs text-white/80 shadow-[0_14px_34px_rgba(0,0,0,0.42),inset_0_1px_0_rgba(255,255,255,0.05)] backdrop-blur-sm`}
+    >
+      {dismissing && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center" aria-hidden="true">
+          {Array.from({ length: 12 }).map((_, index) => (
+            <span
+              key={index}
+              className="cloud-mcp-nudge-poof-dot"
+              style={{
+                "--poof-angle": `${index * 30}deg`,
+                "--poof-distance": `${16 + (index % 4) * 5}px`,
+                animationDelay: `${(index % 3) * 18}ms`,
+              } as React.CSSProperties}
+            />
+          ))}
+        </div>
+      )}
+      <div className="relative flex items-center gap-2.5">
+        <div className="grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.04] text-white/70">
+          <KeyRound className="h-3.5 w-3.5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-white/90">Cloud traces</div>
+          <div className="mt-0.5 leading-relaxed text-white/55">
+            Add a Query API key in Settings to search raindrop from chat.
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.open("https://auth.raindrop.ai/org/api_keys", "_blank", "noopener,noreferrer")}
+              className="inline-flex items-center gap-1 rounded-md border border-white/[0.12] bg-white/[0.06] px-2 py-1 text-[11px] font-medium text-white/[0.82] transition-[background-color,border-color,color] hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
+            >
+              API Keys
+              <ExternalLink className="h-3 w-3" />
+            </button>
+            <button
+              type="button"
+              onClick={dismissWithPoof}
+              className="rounded-md px-2 py-1 text-[11px] font-medium text-white/[0.42] transition-[background-color,color] hover:bg-white/[0.06] hover:text-white/70"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1276,7 +1623,7 @@ function ChatList({
   providerBusy: boolean;
   showProviderIntro: boolean;
   onProviderIntroChoice: (provider: AgentProviderId) => void;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, cwd?: string | null) => void;
   onNew: () => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1453,7 +1800,7 @@ function ChatListItem({
   workspaceCwd: string | null;
   provider: AgentProviderId;
   copied: boolean;
-  onSelect: (id: string) => void;
+  onSelect: (id: string, cwd?: string | null) => void;
   onCopy: (event: SyntheticEvent, session: ClaudeSessionSummary) => Promise<void>;
 }) {
   const cwd = session.cwd ?? workspaceCwd;
@@ -1462,11 +1809,11 @@ function ChatListItem({
     <div
       role="button"
       tabIndex={0}
-      onClick={() => onSelect(session.id)}
+      onClick={() => onSelect(session.id, cwd)}
       onKeyDown={(event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
-        onSelect(session.id);
+        onSelect(session.id, cwd);
       }}
       className={`w-full rounded-md border px-3 py-2 text-left transition-[background-color,border-color,color] ${
         selected
@@ -1530,6 +1877,11 @@ function ChatPreviewItem({
 function formatCwdDisplay(cwd: string | null): string {
   if (!cwd) return "Working directory unavailable";
   return cwd.replace(/^\/Users\/[^/]+(?=\/|$)/, "~");
+}
+
+function apiPathWithCwd(apiPath: string, cwd: string | null): string {
+  if (!cwd) return apiPath;
+  return `${apiPath}${apiPath.includes("?") ? "&" : "?"}cwd=${encodeURIComponent(cwd)}`;
 }
 
 function resumeCommandForSession(session: ClaudeSessionSummary, workspaceCwd: string | null, provider: AgentProviderId = "claude"): string {
@@ -1651,6 +2003,7 @@ function ThinkingActivityCard({ text }: { text: string }) {
 function ToolActivityCard({ block }: { block: Extract<AssistantMessageBlock, { type: "tool" }> }) {
   const failed = block.ok === false;
   const running = block.state === "running";
+  const isRaindropCloudTool = isRaindropCloudMcpTool(block.name);
   const isRaindropTool = isRaindropMcpTool(block.name);
   const displayName = compactToolName(block.name);
   const hasPreview = Boolean(block.input_preview || block.output_preview);
@@ -1661,7 +2014,13 @@ function ToolActivityCard({ block }: { block: Extract<AssistantMessageBlock, { t
       title={block.name}
     >
       <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 py-0.5 outline-none">
-        {isRaindropTool ? (
+        {isRaindropCloudTool ? (
+          <Cloud
+            className={`activity-icon h-3.5 w-3.5 shrink-0 ${
+              failed ? "text-red-200/75" : running ? "animate-pulse text-sky-100/70" : "text-sky-100/65"
+            }`}
+          />
+        ) : isRaindropTool ? (
           <RaindropLogo
             size={14}
             className={`activity-icon shrink-0 ${running ? "animate-pulse" : ""}`}
@@ -1704,7 +2063,42 @@ function compactToolName(name: string): string {
 }
 
 function isRaindropMcpTool(name: string): boolean {
-  return name.startsWith("mcp__raindrop__");
+  return name.startsWith("mcp__raindrop__") || name.startsWith("mcp__raindrop_workshop__") || name.startsWith("raindrop_workshop.");
+}
+
+const RAINDROP_CLOUD_TOOL_NAMES = new Set([
+  "get_dashboard",
+  "list_events",
+  "get_event",
+  "search_events",
+  "get_event_count",
+  "get_event_timeseries",
+  "get_event_facets",
+  "get_trace",
+  "list_users",
+  "get_user",
+  "list_conversations",
+  "get_conversation",
+  "list_signals",
+  "get_signal",
+  "list_signal_groups",
+  "get_signal_group",
+  "list_issues",
+  "get_issue",
+  "ask_agent_question",
+  "get_agent_progress",
+  "list_agent_conversations",
+  "get_agent_conversation",
+  "search_docs",
+  "submit_feedback",
+  "get_write_key",
+]);
+
+function isRaindropCloudMcpTool(name: string): boolean {
+  if (name.startsWith("mcp__raindrop_cloud__") || name.startsWith("raindrop_cloud.")) return true;
+  if (isRaindropMcpTool(name)) return false;
+  if (name.startsWith("mcp__")) return false;
+  return RAINDROP_CLOUD_TOOL_NAMES.has(name);
 }
 
 function AgentAskCard({ block }: { block: Extract<AssistantMessageBlock, { type: "tool" }> }) {
@@ -1753,18 +2147,16 @@ function AgentAskCard({ block }: { block: Extract<AssistantMessageBlock, { type:
 
   if (status === "missing_provider_key") {
     const envVar = typeof result.env_var === "string" ? result.env_var : "ANTHROPIC_API_KEY";
-    const cwd = typeof result.cwd === "string" ? result.cwd : "your agent project";
     return (
       <div className="stream-block w-[90%] rounded-[8px] border border-amber-300/25 bg-amber-300/[0.08] px-3 py-3 text-white/85">
         <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-amber-100/75">
           <KeyRound className="h-3.5 w-3.5" />
           Agent needs an API key
         </div>
-        <div className="mt-2 text-sm text-white/90">Add this to the active project env, then restart Workshop.</div>
+        <div className="mt-2 text-sm text-white/90">Add the key in Workshop Settings, or set the environment variable and restart Workshop.</div>
         <code className="mt-2 block rounded-[6px] border border-white/10 bg-black/25 px-2 py-1.5 font-mono text-[11px] text-amber-50/90">
           {envVar}=...
         </code>
-        <div className="mt-2 text-[11px] text-white/45">{cwd}/.env</div>
       </div>
     );
   }

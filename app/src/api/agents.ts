@@ -50,10 +50,8 @@ export async function getAgentConnectionStatus(): Promise<AgentConnectionStatus>
   return body?.agent ?? body?.claude_code ?? { state: "gray" };
 }
 
-export async function getAnthropicModels(apiKey: string): Promise<string[]> {
-  const body = await apiJsonOrNull<{ models?: unknown[] }>("/api/models/anthropic", {
-    headers: { "x-rd-api-key": apiKey },
-  });
+export async function getAnthropicModels(): Promise<string[]> {
+  const body = await apiJsonOrNull<{ models?: unknown[] }>("/api/models/anthropic");
   return Array.isArray(body?.models)
     ? body.models.filter((model): model is string => typeof model === "string")
     : [];

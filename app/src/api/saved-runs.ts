@@ -346,8 +346,7 @@ async function summarizeAndUpdate(event: SavedEvent): Promise<void> {
       event.signals?.length ? `Signals: ${event.signals.map(s => s.name).join(", ")}` : null,
     ].filter(Boolean).join("\n\n");
 
-    const apiKey = localStorage.getItem("rd_api_key") ?? undefined;
-    const data = await apiJsonOrNull<{ summary?: string }>("/api/summarize", jsonInit("POST", { content, apiKey }));
+    const data = await apiJsonOrNull<{ summary?: string }>("/api/summarize", jsonInit("POST", { content }));
     if (data?.summary) {
       setSavedEventSummary(event.id, data.summary);
       emitSavedRunsChanged();

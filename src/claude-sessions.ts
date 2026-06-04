@@ -42,17 +42,26 @@ export interface ClaudeLoadout {
   model?: string;
 }
 
-function projectSessionDir(cwd: string): string {
+function claudeProjectsDir(): string {
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
-  return path.join(configDir, "projects", encodeClaudeProjectPath(cwd));
+  return path.join(configDir, "projects");
+}
+
+function projectSessionDirs(cwd: string): string[] {
+  const projectsDir = claudeProjectsDir();
+  const names = [
+    encodeClaudeProjectPath(cwd),
+    encodeClaudeProjectPathLegacy(cwd),
+  ];
+  return [...new Set(names)].map((name) => path.join(projectsDir, name));
 }
 
 export function listClaudeSessions(cwd: string): ClaudeSessionSummary[] {
-  const dir = projectSessionDir(cwd);
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter((name) => name.endsWith(".jsonl"))
-    .map((name) => readClaudeSessionFile(path.join(dir, name)))
+  return projectSessionDirs(cwd)
+    .filter((dir) => fs.existsSync(dir))
+    .flatMap((dir) => fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => readClaudeSessionFile(path.join(dir, name))))
     .filter((session): session is ClaudeSessionDetail => !!session)
     .sort((a, b) => (Date.parse(b.updated_at ?? "") || 0) - (Date.parse(a.updated_at ?? "") || 0))
     .map((session) => ({ ...session, cwd }))
@@ -61,16 +70,19 @@ export function listClaudeSessions(cwd: string): ClaudeSessionSummary[] {
 
 export function getClaudeSession(cwd: string, sessionId: string): ClaudeSessionDetail | null {
   if (!/^[a-zA-Z0-9_-]+$/.test(sessionId)) return null;
-  const session = readClaudeSessionFile(path.join(projectSessionDir(cwd), `${sessionId}.jsonl`));
-  return session ? { ...session, cwd } : null;
+  for (const dir of projectSessionDirs(cwd)) {
+    const session = readClaudeSessionFile(path.join(dir, `${sessionId}.jsonl`));
+    if (session) return { ...session, cwd };
+  }
+  return null;
 }
 
 export function getLatestClaudeLoadout(cwd: string): ClaudeLoadout | null {
-  const dir = projectSessionDir(cwd);
-  if (!fs.existsSync(dir)) return null;
-  const files = fs.readdirSync(dir)
-    .filter((name) => name.endsWith(".jsonl"))
-    .map((name) => path.join(dir, name))
+  const files = projectSessionDirs(cwd)
+    .filter((dir) => fs.existsSync(dir))
+    .flatMap((dir) => fs.readdirSync(dir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .map((name) => path.join(dir, name)))
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
     .slice(0, 20);
 
@@ -82,6 +94,10 @@ export function getLatestClaudeLoadout(cwd: string): ClaudeLoadout | null {
 }
 
 function encodeClaudeProjectPath(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9.-]+/g, "-");
+}
+
+function encodeClaudeProjectPathLegacy(cwd: string): string {
   return cwd.replace(/\//g, "-");
 }
 

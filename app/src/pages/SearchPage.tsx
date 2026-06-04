@@ -10,133 +10,18 @@ import { ago } from "../utils/helpers";
 import type { Run, Span, SubAgent } from "../utils/types";
 import { Markdown } from "../components/Markdown";
 import { tracePath } from "../utils/navigation";
-
-const API_BASE = "https://query.raindrop.ai";
-
-interface QueryEvent {
-  id: string;
-  event_name: string;
-  user_id: string | null;
-  convo_id: string | null;
-  timestamp: string;
-  user_input: string | null;
-  assistant_output: string | null;
-  signals?: { id: string; name: string; score?: number }[];
-  properties?: Record<string, unknown>;
-  relevance_score?: number;
-}
-
-interface Signal {
-  id: string;
-  type: string;
-  name: string;
-  description: string | null;
-}
-
-interface TraceSpan {
-  trace_id: string;
-  span_id: string;
-  parent_span_id: string | null;
-  span_name: string;
-  span_type: string;
-  status: string;
-  start_time_ns: number;
-  end_time_ns: number;
-  duration_ns: number;
-  input: string | null;
-  output: string | null;
-  input_tokens: number | null;
-  output_tokens: number | null;
-  model: string | null;
-  provider: string | null;
-  attributes: Record<string, string | number>;
-}
-
-type SearchMode = "text" | "semantic" | "regex";
-
-function getQueryKey(): string | null {
-  return localStorage.getItem("rd_query_key");
-}
-
-async function apiFetch<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const key = getQueryKey();
-  if (!key) throw new Error("No Query API key configured. Add one in Settings.");
-  const url = new URL(path, API_BASE);
-  if (params) Object.entries(params).forEach(([k, v]) => { if (v) url.searchParams.set(k, v); });
-  const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${key}` } });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `API error ${res.status}`);
-  }
-  return res.json();
-}
-
-async function fetchSignals(): Promise<Signal[]> {
-  const res = await apiFetch<{ data: Signal[] }>("/v1/signals", { limit: "100" });
-  return res.data;
-}
-
-async function searchEvents(opts: {
-  query: string; mode: SearchMode; signal?: string; limit?: number;
-  cursor?: string; timestampGte?: string; timestampLt?: string;
-}): Promise<{ data: QueryEvent[]; meta: { cursor: string | null; has_more: boolean } }> {
-  const params: Record<string, string> = { query: opts.query, mode: opts.mode, limit: String(opts.limit ?? 25) };
-  if (opts.signal) params.signal = opts.signal;
-  if (opts.cursor) params.cursor = opts.cursor;
-  if (opts.timestampGte) params["timestamp[gte]"] = opts.timestampGte;
-  if (opts.timestampLt) params["timestamp[lt]"] = opts.timestampLt;
-  return apiFetch("/v1/events/search", params);
-}
-
-async function listEvents(opts: {
-  signal?: string; convoId?: string; limit?: number; cursor?: string;
-  timestampGte?: string; timestampLt?: string; orderBy?: string;
-}): Promise<{ data: QueryEvent[]; meta: { cursor: string | null; has_more: boolean } }> {
-  const params: Record<string, string> = { limit: String(opts.limit ?? 25), order_by: opts.orderBy ?? "-timestamp" };
-  if (opts.signal) params.signal = opts.signal;
-  if (opts.convoId) params.convo_id = opts.convoId;
-  if (opts.cursor) params.cursor = opts.cursor;
-  if (opts.timestampGte) params["timestamp[gte]"] = opts.timestampGte;
-  if (opts.timestampLt) params["timestamp[lt]"] = opts.timestampLt;
-  return apiFetch("/v1/events", params);
-}
-
-async function fetchTraces(eventId: string): Promise<TraceSpan[]> {
-  const res = await apiFetch<{ data: TraceSpan[] }>("/v1/traces", { event_id: eventId, limit: "500" });
-  return res.data;
-}
-
-function mapTraceToSpans(traces: TraceSpan[], eventId: string): Span[] {
-  return traces.map(t => {
-    // For LLM spans, prefer ai.prompt from attributes (has system prompt + full message history)
-    // over the flattened input field which only has the messages array
-    let inputPayload = t.input;
-    let outputPayload = t.output;
-    if (t.span_type.includes("LLM")) {
-      const aiPrompt = t.attributes["ai.prompt"] as string | undefined;
-      if (aiPrompt) inputPayload = aiPrompt;
-      const aiResponseText = t.attributes["ai.response.text"] as string | undefined;
-      if (aiResponseText && !outputPayload) outputPayload = aiResponseText;
-    }
-    return {
-    id: t.span_id,
-    run_id: eventId,
-    parent_span_id: t.parent_span_id,
-    name: t.span_name,
-    span_type: t.span_type,
-    status: t.status,
-    input_payload: inputPayload,
-    output_payload: outputPayload,
-    start_time_ms: t.start_time_ns / 1e6,
-    end_time_ms: t.end_time_ns / 1e6,
-    duration_ms: t.duration_ns / 1e6,
-    model: t.model,
-    provider: t.provider,
-    input_tokens: t.input_tokens,
-    output_tokens: t.output_tokens,
-    attributes: Object.keys(t.attributes).length > 0 ? JSON.stringify(t.attributes) : null,
-  }; });
-}
+import { useWorkshopEvent } from "../hooks/use-workshop-ws";
+import {
+  fetchSignals,
+  fetchTraceSpans as fetchTraces,
+  listEvents,
+  mapTraceToSpans,
+  searchEvents,
+  type QueryEvent,
+  type SearchMode,
+  type Signal,
+} from "../api/query-api";
+import { getSecretStatuses, purgeLegacyBrowserSecrets, saveSecret, type SecretStatus } from "../api/secrets";
 
 /** Port of detectSubAgents from server — works on Span[] */
 function detectSubAgents(spans: Span[]): SubAgent[] {
@@ -288,22 +173,32 @@ export function SearchPage() {
   // Guards the on-mount browse below so it doesn't re-fire on every render.
   // Plain ref (not state) because we don't want to trigger a render on flip.
   const didInitialBrowse = useRef(false);
-  const [hasQueryKey, setHasQueryKey] = useState(() => Boolean(getQueryKey()));
+  const [hasQueryKey, setHasQueryKey] = useState(false);
+
+  const loadQueryKeyStatus = useCallback(async () => {
+    purgeLegacyBrowserSecrets();
+    const statuses = await getSecretStatuses();
+    return statuses.query.configured;
+  }, []);
 
   useEffect(() => {
-    const sync = () => setHasQueryKey(Boolean(getQueryKey()));
-    const onStorage = (e: StorageEvent) => { if (e.key === "rd_query_key") sync(); };
-    const onKeyChange = (e: Event) => {
-      const detail = (e as CustomEvent<{ key?: string }>).detail;
-      if (!detail || detail.key === "rd_query_key") sync();
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("workshop:api-key-change", onKeyChange);
+    let cancelled = false;
+    loadQueryKeyStatus()
+      .then((configured) => {
+        if (!cancelled) setHasQueryKey(configured);
+      })
+      .catch(() => {
+        if (!cancelled) setHasQueryKey(false);
+      });
     return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("workshop:api-key-change", onKeyChange);
+      cancelled = true;
     };
-  }, []);
+  }, [loadQueryKeyStatus]);
+
+  useWorkshopEvent("secrets_updated", (data: { key?: string; status?: SecretStatus }) => {
+    if (data?.key !== "query" || !data.status) return;
+    setHasQueryKey(data.status.configured);
+  });
 
   useEffect(() => {
     if (!hasQueryKey) return;
@@ -553,20 +448,33 @@ export function SearchPage() {
         }
       </div>
       </div>
-      {!hasQueryKey && <SearchLockedOverlay />}
+      {!hasQueryKey && <SearchLockedOverlay onConnected={() => setHasQueryKey(true)} />}
     </div>
   );
 }
 
-function SearchLockedOverlay() {
+function SearchLockedOverlay({ onConnected }: { onConnected: () => void }) {
   const [pendingKey, setPendingKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const trimmed = pendingKey.trim();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!trimmed) return;
-    localStorage.setItem("rd_query_key", trimmed);
-    window.dispatchEvent(new CustomEvent("workshop:api-key-change", { detail: { key: "rd_query_key" } }));
+    setSaving(true);
+    setError(null);
+    try {
+      const status = await saveSecret("query", trimmed);
+      setPendingKey("");
+      if (status.configured) onConnected();
+      purgeLegacyBrowserSecrets();
+      window.dispatchEvent(new CustomEvent("workshop:api-key-change", { detail: { secret: "query" } }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -585,7 +493,7 @@ function SearchLockedOverlay() {
             fontSize: "36px",
             fontWeight: 500,
             lineHeight: 1.08,
-            letterSpacing: "-0.025em",
+            letterSpacing: 0,
             color: C.fg5,
           }}
         >
@@ -603,13 +511,14 @@ function SearchLockedOverlay() {
             onChange={setPendingKey}
             getKeyUrl="https://auth.raindrop.ai/org/api_keys"
           />
+          {error && <div className="mt-2 text-[11px]" style={{ color: C.red }}>{error}</div>}
           <button
             type="submit"
-            disabled={!trimmed}
+            disabled={!trimmed || saving}
             className="mt-3 w-full rounded py-2 text-[12px] font-medium"
-            style={{ background: "#fff", color: "#000", opacity: trimmed ? 1 : 0.5 }}
+            style={{ background: "#fff", color: "#000", opacity: trimmed && !saving ? 1 : 0.5 }}
           >
-            Connect
+            {saving ? "Saving..." : "Connect"}
           </button>
         </form>
       </div>

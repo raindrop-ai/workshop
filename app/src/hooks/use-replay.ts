@@ -10,8 +10,6 @@ export interface ReplayConfig {
   userMessage?: string;
   model?: string;
   systemPrompt?: string;
-  apiKey?: string;
-  openaiKey?: string;
   maxIterations?: number;
   contextOverrides?: Record<string, string>;
 }

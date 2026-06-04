@@ -1,30 +1,7 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getAgents, getAgentsHealth, getAnthropicModels, type AgentEntry, type AgentsHealth, type AgentsRegistry } from "../api/agents";
 import { useWorkshopEvent } from "./use-workshop-ws";
-
-const ANTHROPIC_API_KEY_STORAGE_KEY = "rd_api_key";
-
-function subscribeAnthropicApiKey(listener: () => void): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key === ANTHROPIC_API_KEY_STORAGE_KEY) listener();
-  };
-  const onKeyChange = () => listener();
-  window.addEventListener("storage", onStorage);
-  window.addEventListener("workshop:api-key-change", onKeyChange);
-  return () => {
-    window.removeEventListener("storage", onStorage);
-    window.removeEventListener("workshop:api-key-change", onKeyChange);
-  };
-}
-
-function getAnthropicApiKeySnapshot(): string {
-  return localStorage.getItem(ANTHROPIC_API_KEY_STORAGE_KEY) ?? "";
-}
-
-function getServerSnapshot(): string {
-  return "";
-}
 
 /**
  * Live view of `~/.raindrop/agents.json` and per-agent `/health` status.
@@ -105,10 +82,8 @@ export function useAgentForEvent(eventName: string | null | undefined) {
 }
 
 export function useAnthropicModels() {
-  const apiKey = useSyncExternalStore(subscribeAnthropicApiKey, getAnthropicApiKeySnapshot, getServerSnapshot);
   return useQuery({
-    queryKey: ["anthropic-models", apiKey],
-    queryFn: () => getAnthropicModels(apiKey),
-    enabled: !!apiKey.trim(),
+    queryKey: ["anthropic-models"],
+    queryFn: getAnthropicModels,
   });
 }
