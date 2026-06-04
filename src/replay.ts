@@ -192,6 +192,26 @@ async function runLocalAgentReplay(
   const endpoint = await ensureAgentEndpointDetailed(eventName);
   const agentConfig = endpoint.config;
   if (!agentConfig?.url) {
+    if (endpoint.reason === "not_running") {
+      // A replay command is registered for this event but no agent is running.
+      // Workshop intentionally does not spawn it from this HTTP path; starting
+      // the agent is an explicit local action.
+      sendSSE(res, "error", {
+        code: "replay_agent_not_running",
+        setupRequired: true,
+        eventName,
+        message:
+          `A replay agent is registered for "${eventName}" but is not running. ` +
+          "Workshop does not start replay commands from the HTTP replay path.",
+        suggestedAction:
+          `Start it locally with \`raindrop replay register${endpoint.cwd ? ` --cwd=${endpoint.cwd}` : ""}\`, then retry replay.`,
+        command: endpoint.command,
+        cwd: endpoint.cwd,
+        attemptedStart: false,
+      });
+      res.end();
+      return;
+    }
     if (endpoint.registered) {
       sendSSE(res, "error", {
         code: "replay_agent_start_failed",
