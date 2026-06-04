@@ -76,6 +76,11 @@ raindrop logout   # clear stored credentials
 `raindrop cloud setup` calls `login` for you only when you are not already
 signed in, so day-to-day you just run `cloud setup`.
 
+When you run `raindrop setup` interactively, it also offers to set up Raindrop
+Cloud as an optional last step. Decline to stay Workshop-only, or accept to sign
+in and connect the project. Non-interactive runs (CI, piped scripts) never
+prompt; use `raindrop cloud setup` or the `--cloud` one-liner for those.
+
 To undo a cloud install, run `raindrop cloud uninstall`. It removes the hosted
 MCP server and the cloud skills from your agents and clears the cloud install
 registry, leaving your local Workshop install untouched. Add `--wipe` to also

@@ -7,6 +7,7 @@ import { applyInstallPlan, mcpCleanupWarnings } from "./install/apply";
 import { getSupportedInstallAgents } from "./install/detect";
 import { buildInstallPlan } from "./install/plan";
 import { runInstallWizard } from "./install/wizard";
+import { offerCloudInstrumentation } from "./cloud/offer";
 import type { InstallAgentId, InstallScope } from "./install/types";
 import { enableWorkshopStartup, type WorkshopStartupCommand } from "./workshop-startup";
 import { VERSION } from "./version";
@@ -93,6 +94,11 @@ FLAGS
     --scope=<scope>   global | local
     --cwd=<dir>       Project directory for local installs (default: cwd)
     --bin-path=<p>    Override raindrop binary path used by MCP entries
+
+RAINDROP CLOUD
+    When run interactively, setup also offers to instrument Raindrop Cloud
+    (hosted monitoring at app.raindrop.ai). It is optional; decline to stay
+    Workshop-only, or run \`raindrop cloud setup\` later.
 `);
 }
 
@@ -174,6 +180,12 @@ function finishSetup(args: ParsedArgs, result: Awaited<ReturnType<typeof applyIn
   return success ? 0 : 1;
 }
 
+/** Offer cloud only when we have an interactive stream to prompt on and we're
+ * not in a registry/bundle-targeted test install (those run headless). */
+function canOfferCloud(args: ParsedArgs, interactive: boolean): boolean {
+  return interactive && !args.registryFile && !args.bundleRoot;
+}
+
 export async function cmdSetup(argv: string[]): Promise<number> {
   let args: ParsedArgs;
   try {
@@ -187,36 +199,49 @@ export async function cmdSetup(argv: string[]): Promise<number> {
     throw err;
   }
 
-  if (!args.explicit) {
-    const ttyInput = hasInteractiveStdin() ? null : openTtyInput();
-    if (hasInteractiveStdin() || ttyInput) {
-      try {
-        const { plan, skipped } = await runInstallWizard({ cwd: args.cwd, input: ttyInput ?? undefined });
-        if (skipped) return 0;
-        const result = await applyInstallPlan(plan, {
-          binPath: args.binPath ?? undefined,
-          registryFile: args.registryFile ?? undefined,
-          bundleRoot: args.bundleRoot ?? undefined,
-        });
-        return finishSetup(args, result);
-      } finally {
-        ttyInput?.destroy();
+  // Acquire an interactive input stream once: a real TTY stdin, or /dev/tty
+  // when the installer pipes us through bash (RAINDROP_SETUP_TTY=1).
+  const ttyInput = hasInteractiveStdin() ? null : openTtyInput();
+  const interactive = hasInteractiveStdin() || Boolean(ttyInput);
+
+  try {
+    if (!args.explicit && interactive) {
+      const { plan, skipped, scope } = await runInstallWizard({ cwd: args.cwd, input: ttyInput ?? undefined });
+      if (skipped) return 0;
+      const result = await applyInstallPlan(plan, {
+        binPath: args.binPath ?? undefined,
+        registryFile: args.registryFile ?? undefined,
+        bundleRoot: args.bundleRoot ?? undefined,
+      });
+      const code = finishSetup(args, result);
+      // Only offer cloud once the local setup fully succeeded. `code === 0`
+      // implies the agent install succeeded AND Workshop opened cleanly, so we
+      // never prompt (or override the exit code) after a partial failure.
+      if (code === 0 && canOfferCloud(args, interactive)) {
+        await offerCloudInstrumentation({ scope, cwd: args.cwd, input: ttyInput ?? undefined });
       }
+      return code;
     }
-  }
 
-  const scope = args.scope ?? "global";
-  const agents = setupAgents(scope, args.cwd);
-  if (agents.length === 0) {
-    console.error("setup: no approved coding agents support both skills and MCP for this scope.");
-    return 64;
-  }
+    const scope = args.scope ?? "global";
+    const agents = setupAgents(scope, args.cwd);
+    if (agents.length === 0) {
+      console.error("setup: no approved coding agents support both skills and MCP for this scope.");
+      return 64;
+    }
 
-  const plan = buildInstallPlan({ agents, scope, cwd: args.cwd });
-  const result = await applyInstallPlan(plan, {
-    binPath: args.binPath ?? undefined,
-    registryFile: args.registryFile ?? undefined,
-    bundleRoot: args.bundleRoot ?? undefined,
-  });
-  return finishSetup(args, result);
+    const plan = buildInstallPlan({ agents, scope, cwd: args.cwd });
+    const result = await applyInstallPlan(plan, {
+      binPath: args.binPath ?? undefined,
+      registryFile: args.registryFile ?? undefined,
+      bundleRoot: args.bundleRoot ?? undefined,
+    });
+    const code = finishSetup(args, result);
+    if (code === 0 && canOfferCloud(args, interactive)) {
+      await offerCloudInstrumentation({ scope, cwd: args.cwd, input: ttyInput ?? undefined });
+    }
+    return code;
+  } finally {
+    ttyInput?.destroy();
+  }
 }

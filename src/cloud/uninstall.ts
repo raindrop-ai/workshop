@@ -242,13 +242,27 @@ function removeCloudSkillsForEntry(entry: InstallRegistryEntry, opts: Sink): voi
   }
 }
 
+/** lstat-based existence check that does NOT follow symlinks. A per-agent skill
+ * is a symlink into the canonical skills dir; once that canonical target is
+ * removed the symlink dangles, and `fs.existsSync` (which follows symlinks)
+ * reports it as absent, so it would never be cleaned up. lstat sees the link
+ * itself, so we still detect and unlink it. */
+function pathPresent(target: string): boolean {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function removePath(target: string, label: string, opts: Sink): void {
   if (opts.dryRun) {
-    if (fs.existsSync(target)) opts.removed.push(`would remove ${label}: ${target}`);
+    if (pathPresent(target)) opts.removed.push(`would remove ${label}: ${target}`);
     return;
   }
   try {
-    if (!fs.existsSync(target)) return;
+    if (!pathPresent(target)) return;
     fs.rmSync(target, { recursive: true, force: true });
     opts.removed.push(`removed ${label}: ${target}`);
   } catch (err) {
@@ -258,11 +272,11 @@ function removePath(target: string, label: string, opts: Sink): void {
 
 function removeFile(file: string, label: string, opts: Sink): void {
   if (opts.dryRun) {
-    if (fs.existsSync(file)) opts.removed.push(`would remove ${label}: ${file}`);
+    if (pathPresent(file)) opts.removed.push(`would remove ${label}: ${file}`);
     return;
   }
   try {
-    if (!fs.existsSync(file)) return;
+    if (!pathPresent(file)) return;
     fs.rmSync(file, { force: true });
     opts.removed.push(`removed ${label}: ${file}`);
   } catch (err) {

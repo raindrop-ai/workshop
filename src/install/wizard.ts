@@ -22,6 +22,7 @@ export interface InstallWizardOptions {
 export interface InstallWizardResult {
   plan: InstallPlan;
   skipped?: boolean;
+  scope: InstallScope;
 }
 
 function promptOptions(opts: InstallWizardOptions): { input?: Readable; output?: Writable } {
@@ -86,7 +87,7 @@ export async function runInstallWizard(
     if (isCancel(customChoice)) abort(opts);
     if (customChoice === "skip") {
       outro(`Run ${setupCommand} from the project directory you want to set up.`, io);
-      return { plan: { items: [] }, skipped: true };
+      return { plan: { items: [] }, skipped: true, scope };
     }
     scope = "local";
   }
@@ -104,5 +105,5 @@ export async function runInstallWizard(
     cwd: opts.cwd,
   });
   outro("Setting up Raindrop.", io);
-  return { plan };
+  return { plan, scope };
 }
