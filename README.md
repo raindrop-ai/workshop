@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/raindrop-ai-workshop-badge.png)](https://mseep.ai/app/raindrop-ai-workshop)
+
 <p align="center">
   <img src="./docs/assets/workshop-hero.png" alt="Workshop: the local debugger your agent is missing." width="100%">
 </p>
