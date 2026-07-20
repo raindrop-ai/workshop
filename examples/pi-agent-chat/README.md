@@ -1,6 +1,6 @@
 # pi-agent-chat
 
-End-to-end demo of [`@raindrop-ai/pi-agent`](https://github.com/raindrop-ai/raindrop-js/tree/main/packages/pi-agent) instrumenting [`@mariozechner/pi-agent-core`](https://github.com/badlogic/pi-mono) running prompts via [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai). Each turn opens a Raindrop event and one LLM span; tool calls (when the model invokes them) become tool spans, all mirrored to the local Workshop daemon when one is running.
+End-to-end demo of [`@raindrop-ai/pi-agent`](https://www.npmjs.com/package/@raindrop-ai/pi-agent) instrumenting [`@mariozechner/pi-agent-core`](https://github.com/badlogic/pi-mono) running prompts via [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai). Each turn opens a Raindrop event and one LLM span; tool calls (when the model invokes them) become tool spans, all mirrored to the local Workshop daemon when one is running.
 
 ## Setup
 

@@ -1,8 +1,10 @@
-# Root-level markdown (except README/AGENTS) — e.g. PLAN, CLAUDE; revisit when ready to version them
+# Root-level markdown (except README/AGENTS/CLAUDE) — e.g. PLAN; revisit when ready to version them
 /*.md
 !README.md
 # AGENTS.md is versioned and shipped: it steers coding agents to the one-liner installer.
 !AGENTS.md
+# CLAUDE.md imports AGENTS.md for Claude Code users.
+!CLAUDE.md
 
 # Dependencies
 node_modules/
@@ -56,7 +58,7 @@ Thumbs.db
 .eslintcache
 .prettiercache
 
-# Local worktrees (per CLAUDE.md § Parallel agents)
+# Local worktrees (parallel agent sessions)
 .worktrees/
 
 # External repos cloned for local research

@@ -1,7 +1,12 @@
 ---
 name: instrument-agent
-description: Set up Raindrop AI traces for an agent and verify they flow into Workshop.
-when_to_use: Use when the user says "set up traces", "add tracing", "instrument my agent", "wire Raindrop", "Workshop is empty", or "make traces show up in Workshop." Guides unknown repos by discovering runtime and telemetry setup, using current Raindrop docs/package types, making the smallest safe change, and proving one useful Workshop run.
+description: >
+  Set up Raindrop AI traces for an agent and verify they flow into Workshop. Use when the user
+  says "set up traces", "add tracing", "instrument my agent", "wire Raindrop", "Workshop is empty",
+  or "make traces show up in Workshop." Guides unknown repos by discovering runtime and telemetry
+  setup, using current Raindrop docs/package types, making the smallest safe change, and proving
+  one useful Workshop run. Not for repos that already have working Raindrop instrumentation —
+  use for initial setup or when Workshop shows no data.
 ---
 
 You are helping instrument an AI agent so its next meaningful run appears in Raindrop Workshop. Workshop is the local viewer; it does not run the agent. The user's agent app runs the workflow, the Raindrop SDK captures model/tool boundaries and context, and Workshop renders that telemetry as a debuggable run.

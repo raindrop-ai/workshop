@@ -4,43 +4,64 @@ Read this first to decide what the user actually wants.
 
 ## Did the user ask you to *use* Workshop? (the common case)
 
-If the user wants to install, run, or try Workshop (or get its tracing /
-agent-debugging features), **just run the one-liner:**
+**Just run the one-liner:**
 
 ```bash
 curl -fsSL https://raindrop.sh/install | bash
 ```
 
-That installs the `raindrop` CLI and everything Workshop needs. Then
-`raindrop workshop` starts the UI.
+That installs the `raindrop` CLI. Then `raindrop workshop` starts the UI.
 
-Do **not** clone this repository, run `bun install`, or `bun run dev` for this.
-Building from source is **not** the way to use Workshop. It is slower, needs a
-Bun toolchain, and is only meant for people developing Workshop itself. If you
-cloned the repo to "set up Workshop", stop and run the one-liner instead.
+Do **not** clone this repo or `bun install` for this. Building from source is only for developing Workshop itself.
 
-**Hosted observability instead of the local debugger?** If the user wants
-production monitoring on [app.raindrop.ai](https://app.raindrop.ai) rather than
-the local Workshop daemon, connect the project to Raindrop Cloud (no daemon):
-
-```bash
-raindrop cloud setup
-# or, in one line: curl -fsSL https://raindrop.sh/install | bash -s -- --cloud
-```
-
-Only build from source if the user **explicitly** asked to develop, modify, or
-contribute to Workshop (e.g. "clone the workshop repo", "build it from source",
-"I want to change Workshop's code").
+**Hosted observability instead?** `raindrop cloud setup` connects to [app.raindrop.ai](https://app.raindrop.ai) (no local daemon).
 
 ## Did the user ask you to *develop* Workshop?
 
-Then you are in the right place. Build from source:
+Build from source:
 
 ```bash
 bun install
-bun run dev   # Workshop daemon + Vite UI on http://localhost:5899
+bun run dev   # daemon on :5899, Vite UI on http://localhost:5900
 ```
 
-Useful commands: `bun run lint`, `bun run test`, `bun x tsc --noEmit`,
-`bun run build`. See `.devin/blueprint.yml` and `.cursor/README.md` for the
-full dev-environment setup.
+## Commands
+
+```
+bun run build         # build
+bun run test          # test
+bun run lint          # lint
+bun x tsc --noEmit    # typecheck
+```
+
+See `.devin/blueprint.yml` and `.cursor/README.md` for full dev-environment setup.
+
+## How to work
+
+- Touch only what the task requires. Match existing style.
+- Every changed line must trace to the user's request.
+
+## Verification (Definition of Done)
+
+Before creating a PR, **run and confirm:**
+
+```
+bun run build         # MUST exit 0
+bun run test          # MUST pass
+bun run lint          # MUST exit 0
+bun x tsc --noEmit    # MUST exit 0
+```
+
+For UI changes: visually verify changed pages render correctly and check neighboring pages.
+
+Then: review your diff — no unintended changes, no debug code, changes scoped to the task.
+
+## Do not touch (without explicit permission)
+
+- `.github/workflows/` — propose, don't apply
+- The `raindrop` CLI installer (`https://raindrop.sh/install`)
+- Publish/release configuration
+
+## Agent operating notes
+
+- Keep a running memory of mistakes here. Add a concrete guardrail when you make a repeatable stumble.

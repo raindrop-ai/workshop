@@ -751,6 +751,13 @@ ENVIRONMENT
                                   at ${port} and skips occupied ports upward.
     RAINDROP_WORKSHOP_DB_PATH     SQLite path
                                   (default: ~/.raindrop/raindrop_workshop.db).
+    RAINDROP_WORKSHOP_BIND_HOST   Interface to bind (default: 127.0.0.1). Set to
+                                  0.0.0.0 to accept connections from containers.
+    RAINDROP_WORKSHOP_ALLOWED_HOSTS
+                                  Comma-separated extra Host header hostnames to
+                                  accept, e.g. host.docker.internal. Also lets
+                                  local-network sources (Docker bridge) reach the
+                                  daemon. Loopback-only unless set.
     RAINDROP_MANIFEST_URL         Override update manifest URL (advanced).
 
 DOCS

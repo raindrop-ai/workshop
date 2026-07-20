@@ -1,6 +1,6 @@
 # opencode-plugin-chat
 
-End-to-end demo of [`@raindrop-ai/opencode-plugin`](https://github.com/raindrop-ai/raindrop-js/tree/main/packages/opencode-plugin) loaded into the real [OpenCode](https://opencode.ai) CLI.
+End-to-end demo of [`@raindrop-ai/opencode-plugin`](https://www.npmjs.com/package/@raindrop-ai/opencode-plugin) loaded into the real [OpenCode](https://opencode.ai) CLI.
 
 Each chat turn spawns `opencode run` as a subprocess in a per-process sandbox workspace pre-seeded with a tiny demo project (`README.md`, `app.json`, `hello.txt`, plus an empty `.git/` so opencode treats the dir as the workspace root). The plugin streams session, message, and tool spans (read / list / write / shell / etc.) directly to your local Workshop daemon. The example server only proxies opencode's stdout/stderr back to the chat UI.
 

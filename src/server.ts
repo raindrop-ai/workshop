@@ -53,7 +53,7 @@ import { normalizeQueryApiKey } from "./cloud/query-key";
 import { TransientQueryApiKeyStore } from "./cloud/transient-keys";
 import { CLOUD_MCP_PROXY_PATH, bearerTokenFromHeader, createCloudMcpProxy } from "./cloud/cloud-mcp-proxy";
 import { createLocalOriginGuard, parseAllowedOriginsEnv } from "./local-origin-guard";
-import { isLoopbackRemoteAddress } from "./local-access";
+import { hostnameOnly, isLoopbackRemoteAddress, isPrivateRemoteAddress, parseAllowedHostsEnv } from "./local-access";
 import {
   createAnnotation,
   deleteAnnotation,
@@ -111,39 +111,39 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-function hostHeaderName(host: string): string {
-  if (host.startsWith("[")) {
-    const end = host.indexOf("]");
-    return end >= 0 ? host.slice(1, end) : host;
-  }
-  return host.split(":")[0];
+function isAllowedLocalHostname(hostname: string, allowedHosts?: ReadonlySet<string>): boolean {
+  if (hostname === "127.0.0.1" || hostname === "localhost") return true;
+  return allowedHosts?.has(hostname.toLowerCase()) ?? false;
 }
 
-function isAllowedLocalHostname(hostname: string): boolean {
-  return hostname === "127.0.0.1" || hostname === "localhost";
-}
-
-function isAllowedLocalAccess(hostHeader: string | string[] | undefined, originHeader: string | string[] | undefined): boolean {
+function isAllowedLocalAccess(
+  hostHeader: string | string[] | undefined,
+  originHeader: string | string[] | undefined,
+  allowedHosts?: ReadonlySet<string>,
+): boolean {
   const host = firstHeader(hostHeader) ?? "";
-  const hostName = hostHeaderName(host);
-  if (hostName && !isAllowedLocalHostname(hostName)) return false;
+  const hostName = hostnameOnly(host);
+  if (hostName && !isAllowedLocalHostname(hostName, allowedHosts)) return false;
 
   const origin = firstHeader(originHeader);
   if (!origin) return true;
   try {
     const u = new URL(origin);
-    return isAllowedLocalHostname(u.hostname);
+    return isAllowedLocalHostname(u.hostname, allowedHosts);
   } catch {
     return false;
   }
 }
 
-function allowedIngestCorsOrigin(originHeader: string | string[] | undefined): string | null {
+function allowedIngestCorsOrigin(
+  originHeader: string | string[] | undefined,
+  allowedHosts?: ReadonlySet<string>,
+): string | null {
   const origin = firstHeader(originHeader);
   if (!origin) return null;
   try {
     const u = new URL(origin);
-    return isAllowedLocalHostname(u.hostname) || u.protocol === "chrome-extension:" ? origin : null;
+    return isAllowedLocalHostname(u.hostname, allowedHosts) || u.protocol === "chrome-extension:" ? origin : null;
   } catch {
     return null;
   }
@@ -410,13 +410,24 @@ function demoChatHtml(): string {
 export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
+
+  // Opt-in list of extra hostnames (e.g. `host.docker.internal`) accepted in
+  // the Host/Origin headers. When set, non-loopback but still local-network
+  // source addresses (Docker bridge, local VMs) are also permitted at the
+  // socket layer so containers on the same host can reach the daemon. Empty by
+  // default: Workshop stays loopback-only unless the operator opts in.
+  const allowedHosts = parseAllowedHostsEnv(process.env.RAINDROP_WORKSHOP_ALLOWED_HOSTS);
+  const allowNonLoopbackRemote = allowedHosts.size > 0;
+  const isAllowedRemoteAddress = (address: string | undefined | null): boolean =>
+    allowNonLoopbackRemote ? isPrivateRemoteAddress(address) : isLoopbackRemoteAddress(address);
+
   const wss = new WebSocketServer({
     server,
     path: "/ws",
     verifyClient: (info, done) => {
       done(
-        isLoopbackRemoteAddress(info.req.socket.remoteAddress) &&
-          isAllowedLocalAccess(info.req.headers.host, info.origin || info.req.headers.origin),
+        isAllowedRemoteAddress(info.req.socket.remoteAddress) &&
+          isAllowedLocalAccess(info.req.headers.host, info.origin || info.req.headers.origin, allowedHosts),
         403,
         "Forbidden",
       );
@@ -645,7 +656,7 @@ export async function createServer(port: number) {
   // Workshop is a local control plane. Enforce loopback at the socket layer so
   // spoofable Host/Origin headers cannot turn a broad listener into LAN access.
   app.use((req, res, next) => {
-    if (!isLoopbackRemoteAddress(req.socket.remoteAddress)) {
+    if (!isAllowedRemoteAddress(req.socket.remoteAddress)) {
       return res.status(403).json({ error: "forbidden" });
     }
     next();
@@ -658,8 +669,8 @@ export async function createServer(port: number) {
     [...INGEST_PATHS],
     (req, res, next) => {
       const origin = firstHeader(req.headers.origin);
-      const corsOrigin = allowedIngestCorsOrigin(req.headers.origin);
-      if (!isAllowedLocalAccess(req.headers.host, undefined) || (origin && !corsOrigin)) {
+      const corsOrigin = allowedIngestCorsOrigin(req.headers.origin, allowedHosts);
+      if (!isAllowedLocalAccess(req.headers.host, undefined, allowedHosts) || (origin && !corsOrigin)) {
         return res.status(403).json({ error: "forbidden" });
       }
       if (corsOrigin) res.setHeader("Access-Control-Allow-Origin", corsOrigin);
@@ -678,7 +689,7 @@ export async function createServer(port: number) {
   // subprocess) is a Node fetch that sends neither Origin nor a remote Host.
   app.use((req, res, next) => {
     if (INGEST_PATHS.has(req.path)) return next();
-    if (!isAllowedLocalAccess(req.headers.host, req.headers.origin)) {
+    if (!isAllowedLocalAccess(req.headers.host, req.headers.origin, allowedHosts)) {
       return res.status(403).json({ error: "forbidden" });
     }
     next();
