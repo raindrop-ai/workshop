@@ -411,6 +411,14 @@ export async function createServer(port: number) {
   const app = express();
   const server = http.createServer(app);
 
+  // Workshop is a local control plane with UI actions that can launch local
+  // agents. Do not allow a remote page to frame the UI and drive those actions.
+  app.use((_req, res, next) => {
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+    res.setHeader("X-Frame-Options", "DENY");
+    next();
+  });
+
   // Opt-in list of extra hostnames (e.g. `host.docker.internal`) accepted in
   // the Host/Origin headers. When set, non-loopback but still local-network
   // source addresses (Docker bridge, local VMs) are also permitted at the

@@ -1095,6 +1095,13 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
     },
     [navigate, routeBase, runId],
   );
+  const openConversationTurn = useCallback((id: string) => {
+    if (routeBase === "/saved" && (id === runId || isEventSaved(id))) {
+      navigate(tracePath("/saved", id));
+      return;
+    }
+    navigate(runPath(id));
+  }, [navigate, routeBase, runId]);
 
   // When another surface fires a span deep-link, open it in the span tree route.
   useEffect(() => {
@@ -1381,7 +1388,7 @@ export function RunDetail({ runId, routeBase, initialData, isReplay, source, onF
             {activeTab === "convo" && run.convo_id && (
               source === "cloud"
                 ? <RemoteConvoLoader convoId={run.convo_id} highlightEventId={runId} />
-                : <ConvoDetail convoId={run.convo_id} onOpenTurn={(id) => navigate(runPath(id))} />
+                : <ConvoDetail convoId={run.convo_id} onOpenTurn={openConversationTurn} />
             )}
           </StickToBottom.Content>
           <ScrollToBottomButton />
