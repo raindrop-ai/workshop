@@ -14,7 +14,7 @@ import { sliceSpanPayload } from "./payload-slice";
 import { detectSubAgents } from "./agents";
 import { applyProviderOptions, detectProvider, getProviderBaseURL, getProviderHeaders } from "./provider-options";
 import { runReplay } from "./replay";
-import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContextFromTrace, registerReplayProjectIfPresent } from "./agents-config";
+import { discoverReplayAgents, loadAgentsConfig, saveAgentsConfig, extractContextFromTrace } from "./agents-config";
 import { resolveBuiltAppDir } from "./ui-assets";
 import { setReplayTrace } from "./replay-map";
 import { getClaudeSession, getLatestClaudeLoadout, listClaudeSessions, type ClaudeLoadout } from "./claude-sessions";
@@ -1414,9 +1414,12 @@ export async function createServer(port: number) {
     }
     try {
       const workspace = setActiveWorkspace(cwd);
-      registerReplayProjectIfPresent(workspace.cwd).catch((err) => {
-        console.warn("[workshop] failed to refresh replay project registration:", err);
-      });
+      // Do NOT register replay projects here. This endpoint accepts a
+      // caller-supplied path over loopback HTTP, and registration reads an
+      // attacker-writable `.raindrop/agents.yaml` and persists its `command`
+      // into the replay registry — a command that a later `/api/replay` would
+      // spawn. Replay registration must stay an explicit local action
+      // (`raindrop replay register`), never a side effect of a workspace change.
       try {
         latestClaudeLoadout = getLatestClaudeLoadout(workspace.cwd);
       } catch (err) {
