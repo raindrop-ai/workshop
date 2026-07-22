@@ -7,10 +7,11 @@ import { Button } from "./Button";
 import { FlameTimeline } from "./FlameTimeline";
 import { AlertCircle, Check, Chevron, Dots, Spinner } from "./Icons";
 import { Markdown } from "./Markdown";
-import { MessageList, messagesFromSpan } from "./MessageList";
+import { MessageImages, MessageList, messagesFromSpan } from "./MessageList";
 import { ToolCallPill } from "./ToolCallPill";
 import { extractLiveToolArgs } from "./chat-flow-live";
 import { useSmoothText } from "../hooks/use-smooth-text";
+import { canEditReplayMessage } from "../utils/messageParsing";
 
 type ToolGroupItem = { type: "tool"; span: Span } | { type: "sub_agent"; agent: SubAgent };
 type LiveToolItem =
@@ -21,7 +22,7 @@ type ChatItem =
   | { type: "tool"; span: Span; time: number }
   | { type: "tool_group"; items: ToolGroupItem[]; time: number; liveTools?: LiveToolItem[] }
   | { type: "sub_agent"; agent: SubAgent; time: number }
-  | { type: "user_msg"; content: string; parts?: string[]; time: number }
+  | { type: "user_msg"; content: string; parts?: string[]; images?: string[]; time: number }
   | { type: "system_msg"; content: string; time: number; prevMessages?: { role: string; content: string }[] }
   | { type: "llm_out"; span: Span; time: number }
   | LiveToolItem
@@ -199,23 +200,28 @@ function UserBubble({ content, collapsible }: { content: string; collapsible?: b
   );
 }
 
-function UserMessage({ content, parts, onEdit }: { content: string; parts?: string[]; onEdit?: (content: string) => void }) {
-  const segments = parts && parts.length > 1 ? parts : [content];
+function UserMessage({ content, parts, images, onEdit }: { content: string; parts?: string[]; images?: string[]; onEdit?: (content: string) => void }) {
+  const segments = parts && parts.length > 1 ? parts : content ? [content] : [];
   const multiPart = segments.length > 1;
+  const hasImages = !!images?.length;
+  const editAction = onEdit && canEditReplayMessage({ images }) ? onEdit : undefined;
 
   return (
     <div className="group/usermsg flex justify-end px-4 pt-6 pb-2">
-      <div className="relative" style={{ width: multiPart ? "max(50%, 400px)" : undefined, maxWidth: "max(50%, 400px)" }}>
-        {multiPart ? (
-          <div className="space-y-1.5">
-            {segments.map((seg, i) => (
-              <UserBubble key={i} content={seg} collapsible />
-            ))}
-          </div>
-        ) : (
-          <UserBubble content={segments[0]} />
-        )}
-        {onEdit && (
+      <div
+        className="relative min-w-0"
+        style={{
+          width: multiPart || hasImages ? "min(100%, max(50%, 400px))" : undefined,
+          maxWidth: "min(100%, max(50%, 400px))",
+        }}
+      >
+        <div className="space-y-1.5">
+          {multiPart
+            ? segments.map((seg, i) => <UserBubble key={i} content={seg} collapsible />)
+            : segments.length > 0 && <UserBubble content={segments[0]} />}
+          {hasImages && <MessageImages images={images!} />}
+        </div>
+        {editAction && (
           <button
             className="absolute -bottom-1.5 -right-1.5 p-1.5 rounded-full opacity-0 group-hover/usermsg:opacity-100 transition-opacity"
             style={{
@@ -226,7 +232,7 @@ function UserMessage({ content, parts, onEdit }: { content: string; parts?: stri
               color: C.fg2,
             }}
             title="Edit & replay"
-            onClick={() => onEdit(content)}
+            onClick={() => editAction(content)}
           >
             <Pencil className="size-2.5" />
           </button>
@@ -472,7 +478,7 @@ export function ChatFlow({ spans, liveEvents, subAgents = EMPTY_SUB_AGENTS, onDi
         }
         const newMsgs = i === 0 ? nonSystem : nonSystem.slice(Math.max(0, prevMsgCount - systemMsgs.length));
         const lastUser = newMsgs.filter(m => m.role === "user").pop();
-        if (lastUser) all.push({ type: "user_msg", content: lastUser.content, parts: lastUser.parts, time: span.start_time_ms });
+        if (lastUser) all.push({ type: "user_msg", content: lastUser.content, parts: lastUser.parts, images: lastUser.images, time: span.start_time_ms });
         prevMsgCount = messages.length;
       } else if (span.input_payload) {
         all.push({ type: "user_msg", content: span.input_payload, time: span.start_time_ms });
@@ -638,7 +644,7 @@ export function ChatFlow({ spans, liveEvents, subAgents = EMPTY_SUB_AGENTS, onDi
         }
 
         if (item.type === "user_msg") {
-          return <UserMessage key={`usr${i}`} content={item.content} parts={item.parts} onEdit={onEditMessage} />;
+          return <UserMessage key={`usr${i}`} content={item.content} parts={item.parts} images={item.images} onEdit={onEditMessage} />;
         }
 
         if (item.type === "llm_out") {

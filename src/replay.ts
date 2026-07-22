@@ -78,7 +78,8 @@ function isReplayProviderMessage(message: any): boolean {
   if (message.role === "tool") {
     return Array.isArray(message.content) && message.content.length > 0;
   }
-  return message.role === "system" || message.role === "user" || message.role === "assistant";
+  const isProviderRole = message.role === "system" || message.role === "user" || message.role === "assistant";
+  return isProviderRole && typeof message.content === "string" && message.content.length > 0;
 }
 
 function prepareMessages(ctx: ReturnType<typeof extractContext>, userMessage?: string) {
@@ -363,5 +364,6 @@ export async function runReplay(
 
 export const _internal = {
   generateReplayRunId,
+  prepareMessages,
   recordPlaceholderError,
 };

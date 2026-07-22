@@ -12,10 +12,42 @@ const ROLE_STYLES: Record<string, { bg: string; border: string; text: string; la
   tool:      { bg: "rgba(165,124,245,0.03)",  border: "rgba(165,124,245,0.08)", text: "#b0bcc2", label: "#A57CF5" },
 };
 
+export function MessageImages({ images, outlineColor }: { images: string[]; outlineColor?: string }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((src, i) => {
+        const label = `Attached image ${i + 1} of ${images.length}`;
+        return (
+          <a
+            key={i}
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open ${label.toLowerCase()} in a new tab`}
+            className="block max-w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+          >
+            <img
+              src={src}
+              alt={label}
+              loading="lazy"
+              decoding="async"
+              referrerPolicy="no-referrer"
+              className="max-h-64 max-w-full shrink-0 rounded-md object-contain outline outline-1 -outline-offset-1"
+              style={outlineColor ? { outlineColor } : undefined}
+            />
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 function MessageBubble({ msg, defaultExpanded }: { msg: Message; defaultExpanded: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const preview = msg.content.slice(0, 100).replace(/\n/g, " ") + (msg.content.length > 100 ? "\u2026" : "");
+  const imageCount = msg.images?.length ?? 0;
+  const previewText = msg.content || (imageCount > 0 ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : "");
+  const preview = previewText.slice(0, 100).replace(/\n/g, " ") + (previewText.length > 100 ? "\u2026" : "");
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ background: style.bg, border: `1px solid ${style.border}` }}>
@@ -38,10 +70,13 @@ function MessageBubble({ msg, defaultExpanded }: { msg: Message; defaultExpanded
         )}
       </button>
       {expanded && (
-        <div className="px-3 py-2 select-text cursor-text">
-          <pre className="text-[13px] leading-relaxed font-sans whitespace-pre-wrap select-text" style={{ color: style.text, userSelect: "text" }}>
-            {msg.content}
-          </pre>
+        <div className="px-3 py-2 select-text cursor-text space-y-2">
+          {msg.content && (
+            <pre className="text-[13px] leading-relaxed font-sans whitespace-pre-wrap select-text" style={{ color: style.text, userSelect: "text" }}>
+              {msg.content}
+            </pre>
+          )}
+          {imageCount > 0 && <MessageImages images={msg.images!} outlineColor={style.border} />}
         </div>
       )}
     </div>

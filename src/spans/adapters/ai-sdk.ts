@@ -39,7 +39,7 @@ export const aiSdkLlmAdapter: SpanAdapter = {
         const content = extractContent(m.content);
         if (role === "system") {
           if (content) sys.push(content);
-        } else if (content || role === "tool") {
+        } else if (content || role === "tool" || hasImageContent(m.content)) {
           messages.push({ role: roleOrUnknown(role), content, raw: m });
         }
       }
@@ -51,7 +51,9 @@ export const aiSdkLlmAdapter: SpanAdapter = {
         for (const m of p.messages as Array<Record<string, unknown>>) {
           const role = (m.role as string | undefined) ?? "unknown";
           const content = extractContent(m.content);
-          if (content) messages.push({ role: roleOrUnknown(role), content, raw: m });
+          if (content || hasImageContent(m.content)) {
+            messages.push({ role: roleOrUnknown(role), content, raw: m });
+          }
         }
       }
       if (typeof p.prompt === "string" && messages.length === 0) {
@@ -87,6 +89,22 @@ export const aiSdkLlmAdapter: SpanAdapter = {
     };
   },
 };
+
+function hasImageContent(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => {
+    if (!block || typeof block !== "object" || Array.isArray(block)) return false;
+    const part = block as Record<string, unknown>;
+    if (part.type === "image") return true;
+    if (part.type !== "file") return false;
+    const mediaType = typeof part.mediaType === "string"
+      ? part.mediaType
+      : typeof part.media_type === "string"
+        ? part.media_type
+        : "";
+    return mediaType.toLowerCase().startsWith("image/");
+  });
+}
 
 /**
  * Vercel AI SDK tool-call spans.
