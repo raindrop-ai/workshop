@@ -12,10 +12,30 @@ const ROLE_STYLES: Record<string, { bg: string; border: string; text: string; la
   tool:      { bg: "rgba(165,124,245,0.03)",  border: "rgba(165,124,245,0.08)", text: "#b0bcc2", label: "#A57CF5" },
 };
 
+export function MessageImages({ images, border }: { images: string[]; border?: string }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {images.map((src, i) => (
+        <a key={i} href={src} target="_blank" rel="noreferrer" className="block">
+          <img
+            src={src}
+            alt="attached image"
+            loading="lazy"
+            className="rounded-md max-h-64 max-w-full object-contain"
+            style={border ? { border: `1px solid ${border}` } : undefined}
+          />
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function MessageBubble({ msg, defaultExpanded }: { msg: Message; defaultExpanded: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const preview = msg.content.slice(0, 100).replace(/\n/g, " ") + (msg.content.length > 100 ? "\u2026" : "");
+  const imageCount = msg.images?.length ?? 0;
+  const previewText = msg.content || (imageCount > 0 ? `${imageCount} image${imageCount > 1 ? "s" : ""}` : "");
+  const preview = previewText.slice(0, 100).replace(/\n/g, " ") + (previewText.length > 100 ? "\u2026" : "");
 
   return (
     <div className="rounded-lg overflow-hidden" style={{ background: style.bg, border: `1px solid ${style.border}` }}>
@@ -38,10 +58,13 @@ function MessageBubble({ msg, defaultExpanded }: { msg: Message; defaultExpanded
         )}
       </button>
       {expanded && (
-        <div className="px-3 py-2 select-text cursor-text">
-          <pre className="text-[13px] leading-relaxed font-sans whitespace-pre-wrap select-text" style={{ color: style.text, userSelect: "text" }}>
-            {msg.content}
-          </pre>
+        <div className="px-3 py-2 select-text cursor-text space-y-2">
+          {msg.content && (
+            <pre className="text-[13px] leading-relaxed font-sans whitespace-pre-wrap select-text" style={{ color: style.text, userSelect: "text" }}>
+              {msg.content}
+            </pre>
+          )}
+          {imageCount > 0 && <MessageImages images={msg.images!} border={style.border} />}
         </div>
       )}
     </div>
