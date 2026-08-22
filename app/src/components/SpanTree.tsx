@@ -55,14 +55,113 @@ function typeInfo(span: Span) {
   return TYPE_LABEL.INTERNAL;
 }
 
-function SpanRow({ span, depth, minTime, totalDur, selected, flashing, onClick, onContextMenu, annotations, freshIds, onClearFresh }: {
-  span: Span; depth: number; minTime: number; totalDur: number;
-  selected: boolean; flashing: boolean; onClick: () => void;
+interface SpanTreeModel {
+  spanMap: Map<string, Span>;
+  children: Map<string, Span[]>;
+  roots: Span[];
+  descendantCounts: Map<string, number>;
+}
+
+interface VisibleSpanRow {
+  span: Span;
+  depth: number;
+}
+
+function buildSpanTreeModel(spans: Span[]): SpanTreeModel {
+  const spanMap = new Map(spans.map(s => [s.id, s]));
+  const children = new Map<string, Span[]>();
+  const roots: Span[] = [];
+
+  for (const span of spans) {
+    if (!span.parent_span_id || !spanMap.has(span.parent_span_id)) {
+      roots.push(span);
+      continue;
+    }
+
+    const siblings = children.get(span.parent_span_id) ?? [];
+    siblings.push(span);
+    children.set(span.parent_span_id, siblings);
+  }
+
+  const descendantCounts = new Map<string, number>();
+  const countDescendants = (span: Span): number => {
+    let count = 0;
+    for (const child of children.get(span.id) ?? []) {
+      count += 1 + countDescendants(child);
+    }
+    descendantCounts.set(span.id, count);
+    return count;
+  };
+
+  for (const root of roots) countDescendants(root);
+
+  return { spanMap, children, roots, descendantCounts };
+}
+
+function getVisibleSpanRows(model: SpanTreeModel, collapsedIds: Set<string>): VisibleSpanRow[] {
+  const rows: VisibleSpanRow[] = [];
+
+  const walk = (span: Span, depth: number) => {
+    rows.push({ span, depth });
+    if (collapsedIds.has(span.id)) return;
+    for (const child of model.children.get(span.id) ?? []) walk(child, depth + 1);
+  };
+
+  for (const root of model.roots) walk(root, 0);
+  return rows;
+}
+
+function getAncestorIds(spanId: string, spanMap: Map<string, Span>): string[] {
+  const ancestors: string[] = [];
+  let parentId = spanMap.get(spanId)?.parent_span_id ?? null;
+
+  while (parentId) {
+    ancestors.push(parentId);
+    parentId = spanMap.get(parentId)?.parent_span_id ?? null;
+  }
+
+  return ancestors;
+}
+
+function isDescendantOf(spanId: string, ancestorId: string, spanMap: Map<string, Span>): boolean {
+  return getAncestorIds(spanId, spanMap).includes(ancestorId);
+}
+
+interface SpanRowProps {
+  span: Span;
+  depth: number;
+  minTime: number;
+  totalDur: number;
+  selected: boolean;
+  flashing: boolean;
+  hasChildren: boolean;
+  collapsed: boolean;
+  hiddenDescendantCount: number;
+  onClick: () => void;
+  onToggleCollapse: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onContextMenu?: (e: React.MouseEvent, span: Span) => void;
   annotations: Annotation[];
   freshIds: Set<string>;
   onClearFresh: (id: string) => void;
-}) {
+}
+
+function SpanRow({
+  span,
+  depth,
+  minTime,
+  totalDur,
+  selected,
+  flashing,
+  hasChildren,
+  collapsed,
+  hiddenDescendantCount,
+  onClick,
+  onToggleCollapse,
+  onContextMenu,
+  annotations,
+  freshIds,
+  onClearFresh,
+}: SpanRowProps) {
   const info = typeInfo(span);
   const color = info.color;
   const isErr = span.status === "ERROR";
@@ -84,12 +183,32 @@ function SpanRow({ span, depth, minTime, totalDur, selected, flashing, onClick, 
       onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(e, span); } : undefined}
     >
       <div className="flex items-center gap-1.5 flex-shrink-0" style={{ width: 220, paddingLeft: depth * 14 + 8, minWidth: 220 }}>
+        {hasChildren ? (
+          <button
+            type="button"
+            aria-label={collapsed ? `Expand ${span.name}` : `Collapse ${span.name}`}
+            aria-expanded={!collapsed}
+            className="flex items-center justify-center rounded transition-colors"
+            style={{ width: 14, height: 18, color: C.fg0, marginLeft: -2 }}
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand children" : "Collapse children"}
+          >
+            <Chevron open={!collapsed} size={10} />
+          </button>
+        ) : (
+          <span style={{ width: 14, height: 18, marginLeft: -2 }} />
+        )}
         <span className="text-[10px] font-mono font-bold px-1 py-0.5 rounded" style={{ color: info.color, background: `${info.color}12` }}>
           {info.label}
         </span>
         <span className="text-[11px] font-mono truncate" style={{ color: isErr ? C.red : C.fg3 }} title={span.name}>
           {span.name}
         </span>
+        {collapsed && hiddenDescendantCount > 0 && (
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded" style={{ color: C.fg0, background: "rgba(255,255,255,0.05)" }}>
+            +{hiddenDescendantCount}
+          </span>
+        )}
         {annotations.map((a) => (
           <AnnotationChip
             key={a.id}
@@ -295,13 +414,16 @@ export function SpanTree({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [addingForSpan, setAddingForSpan] = useState<string | null>(null);
   const [flashId, setFlashId] = useState<string | null>(null);
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const runId = spans[0]?.run_id ?? null;
-  const reportedSelectedId = selectedId && spans.some((s) => s.id === selectedId) ? selectedId : null;
+  const treeModel = useMemo(() => buildSpanTreeModel(spans), [spans]);
+  const reportedSelectedId = selectedId && treeModel.spanMap.has(selectedId) ? selectedId : null;
 
   useEffect(() => {
-    if (controlled || !runId || autoSelectedRunRef.current === runId) return;
+    if (!runId || autoSelectedRunRef.current === runId) return;
     autoSelectedRunRef.current = runId;
-    setInternalSelectedId(spans[0]?.id ?? null);
+    if (!controlled) setInternalSelectedId(spans[0]?.id ?? null);
+    setCollapsedIds(new Set());
   }, [controlled, runId, spans]);
 
   useEffect(() => {
@@ -321,6 +443,13 @@ export function SpanTree({
     const handler = (ev: Event) => {
       const spanId = (ev as CustomEvent).detail?.spanId as string | undefined;
       if (!spanId || !spanIds.has(spanId)) return;
+      setCollapsedIds((prev) => {
+        const next = new Set(prev);
+        for (const parentId of getAncestorIds(spanId, treeModel.spanMap)) {
+          next.delete(parentId);
+        }
+        return next;
+      });
       setInternalSelectedId(spanId);
       setFlashId(spanId);
       requestAnimationFrame(() => {
@@ -331,10 +460,17 @@ export function SpanTree({
     };
     window.addEventListener("workshop:deep-link-span", handler);
     return () => window.removeEventListener("workshop:deep-link-span", handler);
-  }, [controlled, spans]);
+  }, [controlled, spans, treeModel.spanMap]);
 
   useEffect(() => {
     if (!selectedSpanId) return;
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      for (const parentId of getAncestorIds(selectedSpanId, treeModel.spanMap)) {
+        next.delete(parentId);
+      }
+      return next;
+    });
     setFlashId(selectedSpanId);
     requestAnimationFrame(() => {
       const el = document.querySelector<HTMLElement>(`[data-span-row="${selectedSpanId}"]`);
@@ -342,7 +478,7 @@ export function SpanTree({
     });
     const timeout = window.setTimeout(() => setFlashId(null), 1500);
     return () => window.clearTimeout(timeout);
-  }, [selectedSpanId]);
+  }, [selectedSpanId, treeModel.spanMap]);
 
   // Dismiss context menu on scroll / outside click / escape
   useEffect(() => {
@@ -370,26 +506,26 @@ export function SpanTree({
     return map;
   }, [annotations]);
 
-  const spanMap = new Map(spans.map(s => [s.id, s]));
-  const children = new Map<string, Span[]>();
-  const roots: Span[] = [];
-  for (const s of spans) {
-    if (!s.parent_span_id || !spanMap.has(s.parent_span_id)) roots.push(s);
-    else { const c = children.get(s.parent_span_id) ?? []; c.push(s); children.set(s.parent_span_id, c); }
-  }
-
-  const flat: { span: Span; depth: number }[] = [];
-  function walk(span: Span, depth: number) {
-    flat.push({ span, depth });
-    for (const kid of children.get(span.id) ?? []) walk(kid, depth + 1);
-  }
-  for (const r of roots) walk(r, 0);
+  const flat = useMemo(() => getVisibleSpanRows(treeModel, collapsedIds), [treeModel, collapsedIds]);
 
   const minTime = flat.length > 0 ? Math.min(...flat.map(f => f.span.start_time_ms)) : 0;
   const maxTime = flat.length > 0 ? Math.max(...flat.map(f => f.span.end_time_ms)) : 0;
   const totalDur = maxTime - minTime || 1;
 
-  const selectedSpan = selectedId ? spanMap.get(selectedId) : null;
+  const selectedSpan = selectedId ? treeModel.spanMap.get(selectedId) : null;
+  const toggleCollapse = (span: Span) => (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    const isCollapsing = !collapsedIds.has(span.id);
+    if (isCollapsing && selectedId && isDescendantOf(selectedId, span.id, treeModel.spanMap)) {
+      setSelectedId(span.id);
+    }
+    setCollapsedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(span.id)) next.delete(span.id);
+      else next.add(span.id);
+      return next;
+    });
+  };
 
   if (flat.length === 0) return <div style={{ color: C.fg1 }}>No spans</div>;
 
@@ -411,7 +547,11 @@ export function SpanTree({
                 minTime={minTime} totalDur={totalDur}
                 selected={span.id === selectedId}
                 flashing={span.id === flashId}
+                hasChildren={(treeModel.children.get(span.id)?.length ?? 0) > 0}
+                collapsed={collapsedIds.has(span.id)}
+                hiddenDescendantCount={treeModel.descendantCounts.get(span.id) ?? 0}
                 onClick={() => setSelectedId(span.id === selectedId ? null : span.id)}
+                onToggleCollapse={toggleCollapse(span)}
                 onContextMenu={onCreateAnnotation ? (e, s) => setContextMenu({ spanId: s.id, x: e.clientX, y: e.clientY }) : undefined}
                 annotations={annotationsBySpan.get(span.id) ?? []}
                 freshIds={freshIds}
