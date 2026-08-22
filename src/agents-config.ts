@@ -33,7 +33,7 @@ export interface EnsureAgentEndpointResult {
   command?: string;
   cwd?: string;
   logPath?: string;
-  reason?: "not_registered" | "start_timeout";
+  reason?: "not_registered" | "start_timeout" | "not_running";
 }
 
 interface ReplayProjectRegistryEntry {
@@ -348,16 +348,12 @@ export async function registerReplayProject(
   return { cwd: resolvedCwd, configPath, agents: Object.keys(agentEntries) };
 }
 
-export async function registerReplayProjectIfPresent(cwd: string): Promise<boolean> {
-  try {
-    const configPath = getAgentsYamlPath(path.resolve(cwd));
-    if (!fs.existsSync(configPath)) return false;
-    await registerReplayProject(cwd, { validate: false });
-    return true;
-  } catch {
-    return false;
-  }
-}
+// `registerReplayProjectIfPresent` was removed: it registered replay commands
+// from a caller-supplied directory without validation as a side effect of an
+// HTTP workspace change, which let an attacker-writable `.raindrop/agents.yaml`
+// land an executable `command` in the replay registry. Replay registration is
+// now exclusively the explicit `raindrop replay register` CLI flow
+// (`registerReplayProject`), which runs under direct user intent.
 
 export function getAgentEndpoint(eventName: string): AgentConfig | null {
   const config = loadAgentsConfig();
@@ -511,46 +507,23 @@ export async function ensureAgentEndpointDetailed(eventName: string): Promise<En
       reason: "not_registered",
     };
   }
-  const logPath = spawnReplayCommand(config) ?? replayLogPath(config) ?? undefined;
 
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    await new Promise(resolve => setTimeout(resolve, 300));
-    const healthy = await isAgentHealthy(config);
-    if (healthy?.url) {
-      return {
-        eventName: name,
-        config: { ...config, ...healthy },
-        registered: true,
-        attemptedStart: true,
-        command: config.command,
-        cwd: config.cwd,
-        logPath,
-      };
-    }
-    const rescanned = await discoverReplayAgents();
-    if (rescanned[name]?.url) {
-      return {
-        eventName: name,
-        config: rescanned[name],
-        registered: true,
-        attemptedStart: true,
-        command: config.command,
-        cwd: config.cwd,
-        logPath,
-      };
-    }
-  }
-
+  // A command-bearing config exists but no healthy agent is running. We must
+  // NOT spawn `config.command` here: this function is reached over loopback
+  // HTTP via `/api/replay`, and the command originates from a registry entry
+  // that an attacker may control (see `replay-projects.json`). Spawning a
+  // replay agent is an explicit local action performed by
+  // `raindrop replay register`, which validates and starts the agent under
+  // direct user intent. The HTTP replay path only connects to an
+  // already-running agent.
   return {
     eventName: name,
     config: null,
     registered: true,
-    attemptedStart: true,
+    attemptedStart: false,
     command: config.command,
     cwd: config.cwd,
-    logPath,
-    reason: "start_timeout",
+    reason: "not_running",
   };
 }
 
