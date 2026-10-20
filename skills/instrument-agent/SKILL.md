@@ -214,7 +214,7 @@ Docs: `https://raindrop.ai/docs/sdk/swift`
 
 Use the `raindrop-swift` package (product `Raindrop`) with Swift Package Manager: `.package(url: "https://github.com/raindrop-ai/raindrop-swift", from: "<latest tag>")`. Find the latest tag with `git ls-remote --tags https://github.com/raindrop-ai/raindrop-swift`, and read the resolved package's `README.md` and public API in `.build/checkouts/raindrop-swift` (or Xcode's package cache) before coding.
 
-Hard version gate: require the latest available tag and never lower than `0.0.6` (current span nesting, `inlineSubagent` and scoped helpers usable from `@MainActor`, span-content PII redaction). The SDK is beta; pin the version.
+Hard version gate: require the latest available tag and never lower than `0.0.7` (current span nesting, `inlineSubagent` and scoped helpers usable from `@MainActor`, span-content PII redaction, `storageProtection`). The SDK is beta; pin the version.
 
 First decide where the code runs, because Workshop setup differs:
 
@@ -251,7 +251,7 @@ Swift gotchas:
 - Phase 2: open a scope with `interaction.withSpan("agent.run") { _ in ... }` and record model calls with `interaction.startLlmSpan(...)` (`setOutput`, `setUsage`, `end`) and tools with `interaction.withTool(name, input:) { ... }` around the real tool body. Spans started inside a scope nest automatically (task-local current span); don't add `parent:` unless the docs call for it.
 - The current span does not flow into `Task.detached` (it does into `Task {}` and `async let`). Work moved to a detached task shows up unnested; pass `parent: .span(...)` there, or keep the work in a structured task.
 - Subagents: if the caller waits for the subagent within the same turn, use `interaction.inlineSubagent(name, input:) { ... }` (one event; the subagent's spans nest under it). Use `subagent(name:)` + `raindrop.beginSubagent(handoff)` only when the subagent runs on its own (background task or another process) and should be its own event.
-- If the app handles personal data, set `config.redactPii = true` (event input/output and span content) and keep it on for Workshop runs too.
+- If the app handles personal data, set `config.redactPii = true` (event input/output and span content) and keep it on for Workshop runs too. If the organization requires data to be unreadable while the device is locked (common for managed devices), set `config.storageProtection = .complete`; don't change it otherwise.
 - Don't invent per-call wrapper APIs: Swift has no auto-instrumentation of OpenAI/Anthropic clients. Instrument the app's own loop.
 
 ### Other Framework Integrations
