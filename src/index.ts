@@ -83,9 +83,30 @@ function printPortFallback(requestedPort: number, port: number): void {
 
 async function runBackend(): Promise<void> {
   const requestedPort = getConfiguredPort();
+  // `serve` is what the login launch agent runs, and an MCP bridge may have
+  // auto-started a daemon moments earlier. Reuse a running Workshop instead of
+  // falling back to the next free port and splitting clients across two daemons.
+  const runningPort = await findRunningWorkshop(requestedPort);
+  if (runningPort !== null) {
+    console.log(`workshop already running on :${runningPort}; not starting another`);
+    return;
+  }
   const port = hasExplicitPort() ? requestedPort : await findFreePort(requestedPort);
   const bindHost = getConfiguredBindHost();
   const { server } = await createServer(port);
+
+  // Another daemon can still win the bind between the check above and
+  // listen() (several clients starting at login). If the winner is Workshop,
+  // defer to it; otherwise keep failing as before.
+  server.once("error", async (err: Error) => {
+    const winner = await findRunningWorkshop(port);
+    if (winner !== null) {
+      console.log(`workshop already running on :${winner}; not starting another`);
+      process.exit(0);
+    }
+    console.error(`error: ${err.message}`);
+    process.exit(1);
+  });
 
   server.listen(port, bindHost, () => {
     printPortFallback(requestedPort, port);
@@ -600,6 +621,28 @@ function getConfiguredPort(): number {
 
 function hasExplicitPort(): boolean {
   return Boolean(process.env[PORT_ENV] && process.env[PORT_ENV]?.trim());
+}
+
+// How long `serve` waits for a busy requested port to start answering as
+// Workshop. A daemon spawned by another process holds the port for a few
+// seconds before /health responds (migrations run before listen completes).
+const RUNNING_WORKSHOP_WAIT_MS = 10_000;
+
+async function findRunningWorkshop(requestedPort: number): Promise<number | null> {
+  const savedPort = hasExplicitPort() ? null : readPort();
+  if (savedPort && savedPort !== requestedPort && await isHealthy(savedPort)) return savedPort;
+
+  if (await isHealthy(requestedPort)) return requestedPort;
+  if (await isPortFree(requestedPort)) return null;
+
+  // Port is taken but not answering yet: give a starting daemon time to come up
+  // before treating the port as owned by some other process.
+  for (let waited = 0; waited < RUNNING_WORKSHOP_WAIT_MS; waited += 250) {
+    await sleep(250);
+    if (await isHealthy(requestedPort)) return requestedPort;
+    if (await isPortFree(requestedPort)) return null;
+  }
+  return null;
 }
 
 async function selectExactWorkshopPort(port: number): Promise<WorkshopPortSelection> {

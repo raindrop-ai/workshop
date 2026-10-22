@@ -620,6 +620,13 @@ export async function createServer(port: number) {
     return latestClaudeLoadout ?? defaultAgentLoadout("claude");
   }
 
+  // ws re-emits HTTP server errors (e.g. EADDRINUSE on listen) on the wss, which
+  // throws when unhandled — before the caller's own server "error" listener can
+  // run. Only rethrow when the caller hasn't attached one (ws's forwarder is 1).
+  wss.on("error", (err) => {
+    if (server.listenerCount("error") <= 1) throw err;
+  });
+
   wss.on("connection", (ws) => {
     const wsId = randomUUID();
     clients.add(ws);
