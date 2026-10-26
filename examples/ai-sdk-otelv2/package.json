@@ -6,12 +6,12 @@
     "dev": "tsx server.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.106",
+    "@ai-sdk/openai": "^2.0.110",
     "@opentelemetry/otlp-transformer": "latest",
-    "ai": "^6.0.174",
+    "ai": "^6.0.214",
     "dotenv": "^17.4.2",
-    "express": "^4.21.0",
-    "raindrop-ai": "0.1.1-otelv2",
+    "express": "^4.22.3",
+    "raindrop-ai": "0.4.0-otelv2",
     "zod": "^3.25.76"
   },
   "devDependencies": {

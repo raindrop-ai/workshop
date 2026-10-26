@@ -8,10 +8,17 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@raindrop-ai/claude-agent-sdk": "^0.0.13",
-    "express": "^4.21.0"
+    "express": "^4.22.3"
   },
   "devDependencies": {
     "tsx": "^4.20.3",
     "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "hono": "4.13.11",
+    "proxy-addr": "2.0.8",
+    "qs": "6.16.0"
   }
 }

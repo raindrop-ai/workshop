@@ -22,4 +22,4 @@ serde_json = "1"
 futures = "0.3"
 bytes = "1"
 uuid = { version = "1", features = ["v4"] }
-raindrop = { git = "https://github.com/raindrop-ai/raindrop-rust", tag = "v0.0.4", package = "raindrop-ai" }
+raindrop = { git = "https://github.com/raindrop-ai/raindrop-rust", tag = "v0.0.9", package = "raindrop-ai" }

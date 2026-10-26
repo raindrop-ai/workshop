@@ -8,8 +8,9 @@
     "raindrop": "dist/index.js",
     "raindrop-dev": "bin/raindrop-dev"
   },
+  "packageManager": "bun@1.4.4",
   "engines": {
-    "bun": ">=1.3.13"
+    "bun": ">=1.4.4"
   },
   "workspaces": [
     "app"
@@ -40,24 +41,30 @@
     "install:local": "bun scripts/install-local.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.69",
-    "@ai-sdk/openai": "^3.0.26",
+    "@ai-sdk/anthropic": "^3.0.89",
+    "@ai-sdk/openai": "^3.0.77",
     "@clack/prompts": "^1.3.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@raindrop-ai/ai-sdk": "^0.0.24",
     "@raindrop-ai/claude-agent-sdk": "^0.0.10",
     "agent-install": "^0.0.5",
-    "ai": "^6.0.160",
+    "ai": "^6.0.214",
     "drizzle-orm": "^0.45.2",
-    "express": "^4.21.0",
+    "express": "^4.22.3",
     "ink": "^7.0.2",
     "jsonpath-plus": "^10.4.0",
-    "protobufjs": "~7.5.3",
-    "raindrop-ai": "^0.0.89",
+    "protobufjs": "~7.6.5",
+    "raindrop-ai": "^0.4.0",
     "react": "^19.2.6",
-    "tar": "^7",
-    "ws": "^8.16.0",
+    "tar": "^7.5.21",
+    "ws": "^8.21.3",
     "zod": "^4.3.6"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.15",
+    "shell-quote": "^1.9.0",
+    "esbuild": "^0.25.9",
+    "hono": "4.13.11"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

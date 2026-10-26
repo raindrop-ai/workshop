@@ -20,7 +20,7 @@ Raindrop SDK and integration APIs move quickly. Before writing code, fetch docs 
 - Docs index: `https://raindrop.ai/docs/llms.txt`
 - Introduction: `https://raindrop.ai/docs/introduction`
 - Integration overview: `https://raindrop.ai/docs/integrations/overview`
-- Core SDKs: `https://raindrop.ai/docs/sdk/typescript`, `/sdk/python`, `/sdk/rust`, `/sdk/go`, `/sdk/http-api`, `/sdk/browser`
+- Core SDKs: `https://raindrop.ai/docs/sdk/typescript`, `/sdk/python`, `/sdk/rust`, `/sdk/swift`, `/sdk/go`, `/sdk/http-api`, `/sdk/browser`
 - Framework integrations: `https://raindrop.ai/docs/integrations/<name>` such as `vercel-ai-sdk`, `claude-agent-sdk`, `langchain`, `openai-agents`, `pydantic-ai`, `google-adk`, `bedrock`, `azure-openai`, `vertex-ai`
 
 Use this skill for the workflow and Workshop-specific judgment. Use the docs and installed package README/types for exact install commands, imports, options, and signatures.
@@ -49,7 +49,7 @@ One useful Workshop run should show:
 
 Most integrations use one of three shapes:
 
-- **Interaction boundary:** `begin` when one invocation starts, run the model/tool loop, then `finish` with output or error. Use this for Python, Rust, TypeScript core SDK, and custom loops.
+- **Interaction boundary:** `begin` when one invocation starts, run the model/tool loop, then `finish` with output or error. Use this for Python, Rust, Swift, TypeScript core SDK, and custom loops.
 - **SDK wrapper:** wrap the agent/model SDK once and pass per-call metadata. Use this for Vercel AI SDK, Claude Agent SDK, and similar integrations.
 - **Existing OpenTelemetry owner:** attach Raindrop through the existing telemetry setup if supported. Do not create a second global tracer/provider.
 
@@ -58,7 +58,7 @@ Most integrations use one of three shapes:
 Do a quick read-only pass:
 
 - Find the target agent entry point: route, worker, CLI, queue job, MCP server, or agent class.
-- Identify language/runtime and model/agent SDK: Python, Rust, TypeScript, Vercel AI SDK, Claude Agent SDK, OpenAI/Anthropic direct SDK, LangChain, etc.
+- Identify language/runtime and model/agent SDK: Python, Rust, Swift, TypeScript, Vercel AI SDK, Claude Agent SDK, OpenAI/Anthropic direct SDK, LangChain, etc.
 - For Python, record `python --version`, package version, and the actual `raindrop.analytics` surface before assuming current docs apply.
 - Identify where tools actually execute.
 - Identify package manager and env file convention.
@@ -207,6 +207,54 @@ Keep guidance short:
 - Phase 1: wrap the whole async agent loop with `begin`/`finish`, then `flush` or `close`.
 - Phase 2: use documented Rust span/tool helpers only after the top-level run lands.
 - The Rust SDK is beta. Pin the crate/tag as the docs recommend and trust installed crate APIs.
+
+### Swift
+
+Docs: `https://raindrop.ai/docs/sdk/swift`
+
+Use the `raindrop-swift` package (product `Raindrop`) with Swift Package Manager: `.package(url: "https://github.com/raindrop-ai/raindrop-swift", from: "<latest tag>")`. Find the latest tag with `git ls-remote --tags https://github.com/raindrop-ai/raindrop-swift`, and read the resolved package's `README.md` and public API in `.build/checkouts/raindrop-swift` (or Xcode's package cache) before coding.
+
+If the docs page isn't available (for example it returns 404), use the resolved package's `README.md` and public API instead. If `git ls-remote` can't reach the repository or SwiftPM can't resolve the package, the Swift SDK isn't available to this user yet: stop and report that. Don't vendor or copy SDK source, hand-write an HTTP client, or lower the version gate to get past it.
+
+Hard version gate: require the latest available tag and never lower than `0.0.7` (current span nesting, `inlineSubagent` and scoped helpers usable from `@MainActor`, span-content PII redaction, `storageProtection`). The SDK is beta; pin the version.
+
+First decide where the code runs, because Workshop setup differs:
+
+- **Server, CLI or macOS tool:** `RAINDROP_LOCAL_DEBUGGER=http://localhost:5899/v1/` in the process environment works as for other SDKs.
+- **iOS, tvOS, watchOS or visionOS app:** apps have no process environment. Set `config.localWorkshopURL` in code, behind `#if DEBUG`. The simulator reaches the Mac at `localhost`; a physical device needs the Mac's LAN address and `NSAllowsLocalNetworking` in App Transport Security. Never ship a Workshop URL in release builds.
+
+With a Workshop URL and no write key, the client sends to Workshop only, which is the safest Phase 1 setup.
+
+Phase 1: one client for the process or app lifetime (not one per request), and a `begin`/`finish` boundary around one invocation:
+
+```swift
+import Raindrop
+
+var config = RaindropConfiguration(writeKey: writeKeyFromAppConfig)   // nil/empty: Workshop-only or no-op
+#if DEBUG
+config.localWorkshopURL = URL(string: "http://localhost:5899")         // apps; servers can use RAINDROP_LOCAL_DEBUGGER
+#endif
+let raindrop = RaindropClient(configuration: config)
+
+let interaction = raindrop.begin(BeginOptions(userId: userId, event: "agent_name", input: input,
+                                              convoId: convoId, properties: properties))
+do {
+  let output = try await runAgentLoop(input)
+  await interaction.finish(output: output)          // sends; returns within ~10 s
+} catch {
+  await interaction.fail(error)                     // records the error and finishes the event
+  throw error
+}
+```
+
+Swift gotchas:
+
+- `trackAi`, `begin` and span calls only queue and never throw; `finish`, `flush` and `close` are `async` and bounded. Short-lived processes (CLI, serverless handler, test) must `await raindrop.close()` before exiting. Apps don't need to: the SDK flushes when the app goes to the background and resends saved payloads on the next launch.
+- Phase 2: open a scope with `interaction.withSpan("agent.run") { _ in ... }` and record model calls with `interaction.startLlmSpan(...)` (`setOutput`, `setUsage`, `end`) and tools with `interaction.withTool(name, input:) { ... }` around the real tool body. Spans started inside a scope nest automatically (task-local current span); don't add `parent:` unless the docs call for it.
+- The current span does not flow into `Task.detached` (it does into `Task {}` and `async let`). Work moved to a detached task shows up unnested; pass `parent: .span(...)` there, or keep the work in a structured task.
+- Subagents: if the caller waits for the subagent within the same turn, use `interaction.inlineSubagent(name, input:) { ... }` (one event; the subagent's spans nest under it). Use `subagent(name:)` + `raindrop.beginSubagent(handoff)` only when the subagent runs on its own (background task or another process) and should be its own event.
+- If the app handles personal data, set `config.redactPii = true` (event input/output and span content) and keep it on for Workshop runs too. If the organization requires data to be unreadable while the device is locked (common for managed devices), set `config.storageProtection = .complete`; don't change it otherwise.
+- Don't invent per-call wrapper APIs: Swift has no auto-instrumentation of OpenAI/Anthropic clients. Instrument the app's own loop.
 
 ### Other Framework Integrations
 

@@ -6,11 +6,11 @@
     "dev": "tsx server.ts"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.71",
-    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/anthropic": "^3.0.89",
+    "@ai-sdk/openai": "^2.0.110",
     "@raindrop-ai/ai-sdk": "^0.0.24",
-    "ai": "^6.0.0",
-    "express": "^4.21.0"
+    "ai": "^6.0.214",
+    "express": "^4.22.3"
   },
   "devDependencies": {
     "tsx": "^4.20.3",

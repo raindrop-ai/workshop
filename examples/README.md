@@ -45,7 +45,7 @@ ends with an `Open in Workshop` deep link to the run.
 | [`openai-chat`](./openai-chat) | Official OpenAI SDK + manual `withTool` / `withSpan` / `emitLiveEvent` | bun | 3012 |
 | [`ai-sdk-chat`](./ai-sdk-chat) | Vercel AI SDK + `@raindrop-ai/ai-sdk` auto-instrumentation | bun | 3011 |
 | [`anthropic-chat`](./anthropic-chat) | Official Anthropic SDK + manual instrumentation, native thinking deltas | bun | 3013 |
-| [`ai-sdk-otelv2`](./ai-sdk-otelv2) | Vercel AI SDK via the OTel v2 telemetry path (`raindrop-ai@0.1.1-otelv2`) | bun | 3014 |
+| [`ai-sdk-otelv2`](./ai-sdk-otelv2) | Vercel AI SDK via the OTel v2 telemetry path (`raindrop-ai@0.4.0-otelv2`) | bun | 3014 |
 | [`claude-agent-sdk`](./claude-agent-sdk) | `@anthropic-ai/claude-agent-sdk` wrapped by `@raindrop-ai/claude-agent-sdk` | bun | 3015 |
 | [`browser-chat`](./browser-chat) | `@raindrop-ai/browser-sdk` `trackAiPartial` from the browser | bun | 3016 |
 | [`python-chat`](./python-chat) | `aiohttp` + OpenAI Python SDK + `raindrop-ai` (Python) | python | 3017 |

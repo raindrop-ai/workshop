@@ -3,7 +3,7 @@
 Vercel AI SDK + `raindrop-ai`'s OTel v2 telemetry path
 (`experimental_telemetry.metadata = interaction.vercelAiSdkMetadata()`).
 
-This example pins `raindrop-ai@0.1.1-otelv2`, a pre-release that wires
+This example pins `raindrop-ai@0.4.0-otelv2`, a pre-release that wires
 AI SDK v6 telemetry through OpenTelemetry into the Raindrop trace store.
 The "regular" `ai-sdk-chat` example uses `@raindrop-ai/ai-sdk`'s
 auto-wrap; use this one when you need the OTel-native path

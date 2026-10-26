@@ -1,0 +1,12 @@
+# Bun doesn't read the parent bunfig.toml from this directory.
+# Keep minimumReleaseAgeExcludes in sync with the root bunfig.toml.
+[install]
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = [
+  "raindrop-ai",
+  "@raindrop-ai/ai-sdk",
+  "@raindrop-ai/browser-sdk",
+  "@raindrop-ai/claude-agent-sdk",
+  "@raindrop-ai/opencode-plugin",
+  "@raindrop-ai/pi-agent",
+]
