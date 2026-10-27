@@ -2213,7 +2213,7 @@ export async function createServer(port: number) {
     const requestedModel = typeof body.model === "string" && body.model.trim()
       ? body.model.trim()
       : null;
-    const model = requestedModel ?? continuation.model ?? "claude-sonnet-4-20250514";
+    const model = requestedModel ?? continuation.model ?? "claude-sonnet-5-5";
     const provider = detectProvider(model, continuation.provider);
     const env = providerEnvForProvider(provider);
     const apiKey = provider === "openai"
