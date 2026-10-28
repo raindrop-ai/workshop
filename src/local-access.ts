@@ -79,6 +79,27 @@ export function parseAllowedHostsEnv(value: string | undefined | null): Set<stri
 }
 
 /**
+ * True for a Host/Origin hostname the daemon answers on: loopback, or a name
+ * the operator opted in via RAINDROP_WORKSHOP_ALLOWED_HOSTS.
+ *
+ * The loopback set is deliberately the same one `isLoopbackRemoteAddress`
+ * accepts at the socket layer. Narrowing it here to the IPv4 literal locks out
+ * a daemon reached over IPv6 loopback, which RAINDROP_WORKSHOP_BIND_HOST lets
+ * an operator bind, and which the socket check already lets through.
+ */
+export function isAllowedLocalHostname(
+  hostname: string,
+  allowedHosts?: ReadonlySet<string>,
+): boolean {
+  // Origin hostnames keep their IPv6 brackets (`[::1]`) while Host headers and
+  // the allowlist hold the bare form, so normalize before either comparison.
+  const name = hostnameOnly(hostname).toLowerCase();
+  if (name === "localhost") return true;
+  if (isLoopbackRemoteAddress(name)) return true;
+  return allowedHosts?.has(name) ?? false;
+}
+
+/**
  * Extract the bare hostname from a Host header value or allowlist entry,
  * dropping any port. Handles bracketed (`[::1]:5899`) and bare (`::1`) IPv6.
  */
