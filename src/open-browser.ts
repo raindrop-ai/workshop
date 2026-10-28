@@ -20,7 +20,9 @@ export function openInBrowser(url: string): void {
     args = [url];
   }
   try {
-    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true });
+    // A missing launcher emits asynchronously, after the surrounding try/catch.
+    child.once("error", () => {});
     child.unref();
   } catch {
     // If we can't spawn (no DISPLAY, no `open` on a headless box), the URL
