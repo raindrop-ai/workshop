@@ -11,14 +11,17 @@
     "express": "^4.22.3"
   },
   "devDependencies": {
-    "tsx": "^4.20.3",
+    "tsx": "^4.22.0",
     "typescript": "^5.7.3"
   },
   "overrides": {
     "@hono/node-server": "1.19.15",
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "express@^4>body-parser": "1.20.9",
+    "fast-uri": "3.1.9",
     "hono": "4.13.11",
     "proxy-addr": "2.0.8",
-    "qs": "6.16.0"
+    "qs": "6.16.1",
+    "zod": "4.6.6"
   }
 }
