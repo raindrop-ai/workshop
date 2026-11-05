@@ -53,7 +53,7 @@ import { normalizeQueryApiKey } from "./cloud/query-key";
 import { TransientQueryApiKeyStore } from "./cloud/transient-keys";
 import { CLOUD_MCP_PROXY_PATH, bearerTokenFromHeader, createCloudMcpProxy } from "./cloud/cloud-mcp-proxy";
 import { createLocalOriginGuard, parseAllowedOriginsEnv } from "./local-origin-guard";
-import { hostnameOnly, isLoopbackRemoteAddress, isPrivateRemoteAddress, parseAllowedHostsEnv } from "./local-access";
+import { hostnameOnly, isAllowedLocalHostname, isLoopbackRemoteAddress, isPrivateRemoteAddress, parseAllowedHostsEnv } from "./local-access";
 import {
   createAnnotation,
   deleteAnnotation,
@@ -109,11 +109,6 @@ function getTraceIdFromPartialEvent(body: unknown): string | undefined {
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
-}
-
-function isAllowedLocalHostname(hostname: string, allowedHosts?: ReadonlySet<string>): boolean {
-  if (hostname === "127.0.0.1" || hostname === "localhost") return true;
-  return allowedHosts?.has(hostname.toLowerCase()) ?? false;
 }
 
 function isAllowedLocalAccess(
